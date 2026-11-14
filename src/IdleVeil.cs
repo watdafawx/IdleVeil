@@ -4,8 +4,10 @@
 // Unlike a real Windows screensaver it stays on the normal desktop:
 //  - the window is excluded from screen capture, so screenshots and streams show the desktop underneath
 //  - it never takes focus and clicks pass through it
-//  - it hides on any mouse/keyboard input (including synthetic input) or when a watched file grows
-//  - it stays off while an app asks to keep the display on (video playback)
+//  - it hides on real mouse/keyboard input or when a watched file grows; input injected by AI agents
+//    and automation is ignored unless that option is turned off
+//  - it stays off while a fullscreen app asks to keep the display on (video playback)
+//  - it can turn one monitor off for real (e.g. an OLED, so it can run pixel cleaning) by detaching it
 //  - it hides the mouse cursor while showing, and has a tray icon for options
 //
 // Usage: IdleVeil.exe [--idle seconds] [--mode random|matrix|mystify] [--watch file] [--fps n]
@@ -56,6 +58,12 @@ namespace IdleVeil
         [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr icon);
 
         public const uint SRCCOPY = 0x00CC0020, BLACKNESS = 0x00000042;
+        [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hwnd);
+        [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, System.Text.StringBuilder name, int max);
+        [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+
         const int SystemExecutionState = 16;
         const uint ES_DISPLAY_REQUIRED = 0x2;
 
@@ -72,6 +80,46 @@ namespace IdleVeil
             uint state;
             return CallNtPowerInformation(SystemExecutionState, IntPtr.Zero, 0, out state, 4) == 0
                 && (state & ES_DISPLAY_REQUIRED) != 0;
+        }
+
+        // True when the foreground window covers a whole monitor (fullscreen video, games), but not the desktop itself.
+        [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+
+        static uint cachedPid;
+        static string cachedName;
+
+        // Exe name (lower case, with .exe) of the app that owns the foreground window, or null for the desktop/taskbar.
+        public static string ForegroundApp()
+        {
+            IntPtr h = GetForegroundWindow();
+            if (h == IntPtr.Zero) return null;
+            var cls = new System.Text.StringBuilder(64);
+            GetClassName(h, cls, 64);
+            string c = cls.ToString();
+            if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd" || c == "NotifyIconOverflowWindow") return null;
+            uint pid;
+            GetWindowThreadProcessId(h, out pid);
+            if (pid == 0) return null;
+            if (pid == cachedPid) return cachedName;
+            string name = null;
+            try { name = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName.ToLowerInvariant() + ".exe"; } catch { }
+            cachedPid = pid; cachedName = name;
+            return name;
+        }
+
+        public static bool ForegroundIsFullscreen()
+        {
+            IntPtr h = GetForegroundWindow();
+            // A maximized window also reaches past the screen edges, so it doesn't count.
+            if (h == IntPtr.Zero || IsZoomed(h)) return false;
+            var cls = new System.Text.StringBuilder(64);
+            GetClassName(h, cls, 64);
+            string c = cls.ToString();
+            if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd") return false;
+            RECT r;
+            if (!GetWindowRect(h, out r)) return false;
+            Rectangle m = Screen.FromHandle(h).Bounds;
+            return r.L <= m.Left && r.T <= m.Top && r.R >= m.Right && r.B >= m.Bottom;
         }
     }
 
@@ -150,8 +198,13 @@ namespace IdleVeil
         public string WatchFile;
         public int Fps = 30;
         public bool Preview;
-        public bool IgnoreDisplayRequests;
+        public string KeepOnFor = "fullscreen";   // honour "keep the display on" requests: fullscreen | always | never
         public bool HideCursor = true;
+        public bool IgnoreInjected = true;        // only real mouse/keyboard input counts as activity
+        public string OffMonitor = "";            // EDID id of the monitor to turn off (detach), e.g. AUS2740
+        public List<string> NoVeilApps = new List<string>();   // never veil while one of these exes is focused
+        public bool Debug;                        // log idle state every 10 s
+        public int OffAfterSeconds = 300;         // how long after the veil appears
         public bool Exit;
 
         static string SettingsPath { get { return AppPaths.Settings; } }
@@ -170,6 +223,16 @@ namespace IdleVeil
                     if (k == "mode") Mode = v.ToLowerInvariant();
                     else if (k == "idle") IdleSeconds = int.Parse(v);
                     else if (k == "hidecursor") HideCursor = v == "1" || v.ToLowerInvariant() == "true";
+                    else if (k == "ignoreinjected") IgnoreInjected = v == "1" || v.ToLowerInvariant() == "true";
+                    else if (k == "keeponfor") KeepOnFor = v.ToLowerInvariant();
+                    else if (k == "offmonitor") OffMonitor = v;
+                    else if (k == "offafter") OffAfterSeconds = int.Parse(v);
+                    else if (k == "debug") Debug = v == "1";
+                    else if (k == "noveilapps")
+                    {
+                        NoVeilApps.Clear();
+                        foreach (string a in v.Split(',')) if (a.Trim() != "") NoVeilApps.Add(a.Trim().ToLowerInvariant());
+                    }
                 }
             }
             catch (Exception ex) { Program.Log("settings load error: " + ex.Message); }
@@ -180,7 +243,9 @@ namespace IdleVeil
             try
             {
                 File.WriteAllLines(SettingsPath, new[] {
-                    "mode=" + Mode, "idle=" + IdleSeconds, "hidecursor=" + (HideCursor ? "1" : "0") });
+                    "mode=" + Mode, "idle=" + IdleSeconds, "hidecursor=" + (HideCursor ? "1" : "0"),
+                    "ignoreinjected=" + (IgnoreInjected ? "1" : "0"), "keeponfor=" + KeepOnFor,
+                    "offmonitor=" + OffMonitor, "offafter=" + OffAfterSeconds, "noveilapps=" + string.Join(",", NoVeilApps.ToArray()), "debug=" + (Debug ? "1" : "0") });
             }
             catch (Exception ex) { Program.Log("settings save error: " + ex.Message); }
         }
@@ -197,7 +262,10 @@ namespace IdleVeil
                 else if (k == "--watch") { o.WatchFile = v; i++; }
                 else if (k == "--fps") { o.Fps = int.Parse(v); i++; }
                 else if (k == "--preview") o.Preview = true;
-                else if (k == "--ignore-display-requests") o.IgnoreDisplayRequests = true;
+                else if (k == "--ignore-display-requests") o.KeepOnFor = "never";
+                else if (k == "--count-injected-input") o.IgnoreInjected = false;
+                else if (k == "--off-monitor") { o.OffMonitor = v; i++; }
+                else if (k == "--off-after") { o.OffAfterSeconds = int.Parse(v); i++; }
                 else if (k == "--stats") SaverForm.Stats = true;
                 else if (k == "--exit") o.Exit = true;
             }
@@ -213,6 +281,15 @@ namespace IdleVeil
         public static void Log(string msg)
         {
             try { File.AppendAllText(LogPath, "[" + DateTime.Now.ToString("s") + "] " + msg + Environment.NewLine); } catch { }
+        }
+
+        // Puts a detached monitor back and its windows where they were (used on exit).
+        public static void ReattachNow()
+        {
+            if (!DisplayDetach.IsDetached) return;
+            DisplayDetach.Reattach();
+            Thread.Sleep(1500);
+            DisplayDetach.RestoreWindows();
         }
 
         [STAThread]
@@ -233,13 +310,13 @@ namespace IdleVeil
             // scaling changes after start-up (e.g. a different screen while the TV is off).
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); }   // PER_MONITOR_AWARE_V2, Windows 10 1703+
             catch (EntryPointNotFoundException) { Native.SetProcessDPIAware(); }
-            if (!opt.Preview) opt.LoadSettings();
+            if (!opt.Preview) { opt.LoadSettings(); DisplayDetach.RecoverAfterCrash(); }
             CursorHider.Restore();
             Log("started v" + AppInfo.Version + ": idle=" + opt.IdleSeconds + "s mode=" + opt.Mode + " watch=" + (opt.WatchFile ?? "-")
                 + " displayRequiredNow=" + Native.DisplayRequired());
             try { Application.Run(new Controller(opt)); }
             catch (Exception ex) { Log("crashed: " + ex); }
-            finally { CursorHider.Restore(); }
+            finally { CursorHider.Restore(); ReattachNow(); }
             GC.KeepAlive(mutex);
         }
     }
@@ -258,15 +335,22 @@ namespace IdleVeil
         bool paused;
         DateTime pausedUntil = DateTime.MaxValue;
         EventWaitHandle exitEvent;
+        PhysicalInput input;
+        int detachRetryAt;
+        bool loggedAgentWait;
+        int lastDebugLog;
+        const int AgentQuietMs = 60000;   // don't pull a monitor away while something is still clicking on it
 
         public Controller(Options o)
         {
             opt = o;
+            try { input = new PhysicalInput(); }
+            catch (Exception ex) { Program.Log("raw input unavailable: " + ex.Message); }
             watchLen = WatchLength();
             tick.Interval = 150;
             tick.Tick += OnTick;
             tick.Start();
-            Application.ApplicationExit += delegate { CursorHider.Restore(); if (tray != null) tray.Visible = false; };
+            Application.ApplicationExit += delegate { CursorHider.Restore(); Program.ReattachNow(); if (tray != null) tray.Visible = false; };
             if (opt.Preview) ShowSaver(700);
             else { CreateTray(); ListenForExit(); }
         }
@@ -281,6 +365,7 @@ namespace IdleVeil
         void Quit()
         {
             if (form != null) HideSaver();
+            Program.ReattachNow();
             if (tray != null) tray.Visible = false;
             ExitThread();
         }
@@ -313,6 +398,7 @@ namespace IdleVeil
             AddChoice(anim, "Random", opt.Mode == "random", delegate { opt.Mode = "random"; Changed(); });
             AddChoice(anim, "Matrix rain", opt.Mode == "matrix", delegate { opt.Mode = "matrix"; Changed(); });
             AddChoice(anim, "Mystify", opt.Mode == "mystify", delegate { opt.Mode = "mystify"; Changed(); });
+            AddChoice(anim, "Blank (black)", opt.Mode == "blank", delegate { opt.Mode = "blank"; Changed(); });
             items.Add(anim);
 
             var after = new ToolStripMenuItem("Start after");
@@ -327,6 +413,19 @@ namespace IdleVeil
             var cursor = new ToolStripMenuItem("Hide cursor", null, delegate { opt.HideCursor = !opt.HideCursor; Changed(); });
             cursor.Checked = opt.HideCursor;
             items.Add(cursor);
+
+            var injected = new ToolStripMenuItem("Ignore input from apps (AI agents, automation)", null,
+                delegate { opt.IgnoreInjected = !opt.IgnoreInjected; Changed(); });
+            injected.Checked = opt.IgnoreInjected;
+            items.Add(injected);
+
+            var keep = new ToolStripMenuItem("Keep screen on for video");
+            AddChoice(keep, "Fullscreen only", opt.KeepOnFor == "fullscreen", delegate { opt.KeepOnFor = "fullscreen"; Changed(); });
+            AddChoice(keep, "Always", opt.KeepOnFor == "always", delegate { opt.KeepOnFor = "always"; Changed(); });
+            AddChoice(keep, "Never", opt.KeepOnFor == "never", delegate { opt.KeepOnFor = "never"; Changed(); });
+            items.Add(keep);
+            items.Add(BuildMonitorMenu());
+            items.Add(BuildAppsMenu());
             items.Add(new ToolStripSeparator());
 
             if (paused)
@@ -355,6 +454,63 @@ namespace IdleVeil
             items.Add(new ToolStripMenuItem("Exit", null, delegate { Quit(); }));
         }
 
+        // The last real app that had focus (opening the tray menu moves focus to the taskbar).
+        string lastFocusedApp;
+
+        ToolStripMenuItem BuildAppsMenu()
+        {
+            var menu = new ToolStripMenuItem("Don't show while using");
+            string own = System.Diagnostics.Process.GetCurrentProcess().ProcessName.ToLowerInvariant() + ".exe";
+            if (lastFocusedApp != null && lastFocusedApp != own && !opt.NoVeilApps.Contains(lastFocusedApp))
+            {
+                string app = lastFocusedApp;
+                menu.DropDownItems.Add(new ToolStripMenuItem("Add " + app, null, delegate { opt.NoVeilApps.Add(app); Changed(); }));
+            }
+            if (opt.NoVeilApps.Count > 0)
+            {
+                if (menu.DropDownItems.Count > 0) menu.DropDownItems.Add(new ToolStripSeparator());
+                menu.DropDownItems.Add(new ToolStripMenuItem("Click an app to remove it:") { Enabled = false });
+                foreach (string a in opt.NoVeilApps.ToArray())
+                {
+                    string app = a;
+                    var item = new ToolStripMenuItem(app, null, delegate { opt.NoVeilApps.Remove(app); Changed(); });
+                    item.Checked = true;
+                    menu.DropDownItems.Add(item);
+                }
+            }
+            if (menu.DropDownItems.Count == 0)
+                menu.DropDownItems.Add(new ToolStripMenuItem("Focus an app, then open this menu to add it") { Enabled = false });
+            return menu;
+        }
+
+        ToolStripMenuItem BuildMonitorMenu()
+        {
+            var menu = new ToolStripMenuItem("Turn off monitor");
+            AddChoice(menu, "None", opt.OffMonitor == "", delegate { opt.OffMonitor = ""; Changed(); });
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (DisplayDetach.IsDetached && opt.OffMonitor != "")
+            {
+                seen.Add(opt.OffMonitor);
+                AddChoice(menu, DisplayDetach.DetachedName + " (off now)", true, delegate { });
+            }
+            foreach (var m in DisplayDetach.List())
+            {
+                if (m.Id == "" || !seen.Add(m.Id)) continue;
+                string id = m.Id;
+                AddChoice(menu, m.Name + " (" + id + ")", string.Equals(opt.OffMonitor, id, StringComparison.OrdinalIgnoreCase),
+                          delegate { opt.OffMonitor = id; Changed(); });
+            }
+            menu.DropDownItems.Add(new ToolStripSeparator());
+            menu.DropDownItems.Add(new ToolStripMenuItem("After the veil has shown for:") { Enabled = false });
+            foreach (int min in new[] { 1, 2, 5, 10, 15, 30, 60 })
+            {
+                int m = min;
+                AddChoice(menu, "    " + m + (m == 1 ? " minute" : " minutes"), opt.OffAfterSeconds == m * 60,
+                          delegate { opt.OffAfterSeconds = m * 60; Changed(); });
+            }
+            return menu;
+        }
+
         static void About()
         {
             MessageBox.Show(
@@ -375,7 +531,8 @@ namespace IdleVeil
         {
             opt.SaveSettings();
             UpdateTooltip();
-            Program.Log("settings: idle=" + opt.IdleSeconds + "s mode=" + opt.Mode + " hideCursor=" + opt.HideCursor);
+            Program.Log("settings: idle=" + opt.IdleSeconds + "s mode=" + opt.Mode + " hideCursor=" + opt.HideCursor
+                + " noVeilApps=" + string.Join(",", opt.NoVeilApps.ToArray()) + " ignoreInjected=" + opt.IgnoreInjected + " keepOnFor=" + opt.KeepOnFor + " offMonitor=" + opt.OffMonitor + " offAfter=" + opt.OffAfterSeconds + "s");
         }
 
         void Pause(DateTime until)
@@ -429,16 +586,48 @@ namespace IdleVeil
             catch { return -1; }
         }
 
+        // Tick of the last input that counts as someone being here.
+        uint InputTick()
+        {
+            uint t = opt.IgnoreInjected && input != null && input.Ok ? input.LastPhysicalTick : Native.LastInputTick();
+            uint pad = Controllers.LastActiveTick;
+            // Ticks wrap around every 49 days, so compare by difference rather than value.
+            return pad != 0 && (int)(pad - t) > 0 ? pad : t;
+        }
+
+        bool KeepDisplayOn()
+        {
+            if (opt.Preview || opt.KeepOnFor == "never" || !Native.DisplayRequired()) return false;
+            return opt.KeepOnFor == "always" || Native.ForegroundIsFullscreen();
+        }
+
+        void MaybeDetach(int now)
+        {
+            if (opt.Preview || opt.OffMonitor == "" || DisplayDetach.IsDetached) return;
+            if (now - shownAt < opt.OffAfterSeconds * 1000 || now - detachRetryAt < 0) return;
+            if (input != null && input.Ok && (uint)now - input.LastInjectedTick < AgentQuietMs)
+            {
+                if (!loggedAgentWait) { Program.Log("turn-off waiting: an app is still sending input"); loggedAgentWait = true; }
+                return;
+            }
+            loggedAgentWait = false;
+            if (!DisplayDetach.Detach(opt.OffMonitor)) detachRetryAt = now + 60000;
+        }
+
         void OnTick(object sender, EventArgs e)
         {
             try
             {
                 int now = Environment.TickCount;
-                uint lastInput = Native.LastInputTick();
+                Controllers.Poll();
+                uint lastInput = InputTick();
+                string fgApp = Native.ForegroundApp();
+                if (fgApp != null && form == null) lastFocusedApp = fgApp;
+                bool appKeepsOn = fgApp != null && opt.NoVeilApps.Contains(fgApp);
                 long len = WatchLength();
                 bool logGrew = len != watchLen;
                 watchLen = len;
-                bool displayRequired = !opt.Preview && !opt.IgnoreDisplayRequests && Native.DisplayRequired();
+                bool displayRequired = KeepDisplayOn();
 
                 if (form != null)
                 {
@@ -449,19 +638,31 @@ namespace IdleVeil
                     if (now - shownAt < graceMs) { inputAtShow = lastInput; return; }
                     if (lastInput != inputAtShow || logGrew || displayRequired)
                     {
+                        Program.Log("veil hidden: " + (lastInput != inputAtShow ? "input" : logGrew ? "watched file grew" : "fullscreen app keeps display on"));
                         HideSaver();
                         lastActivity = now;
                         if (opt.Preview) ExitThread();
+                        return;
                     }
+                    MaybeDetach(now);
                     return;
                 }
 
-                if (logGrew || displayRequired) lastActivity = now;
+                if (logGrew || displayRequired || appKeepsOn) lastActivity = now;
                 if (paused && DateTime.Now >= pausedUntil) { paused = false; UpdateTooltip(); }
                 if (paused) return;
                 int sinceInput = (int)((uint)now - lastInput);
                 int idle = Math.Min(sinceInput, now - lastActivity);
-                if (idle >= opt.IdleSeconds * 1000) ShowSaver(700);
+                if (opt.Debug && now - lastDebugLog > 10000)
+                {
+                    lastDebugLog = now;
+                    Program.Log("debug: sinceInput=" + sinceInput + " sinceActivity=" + (now - lastActivity)
+                        + " sinceInjected=" + (input != null && input.Ok ? ((uint)now - input.LastInjectedTick).ToString() : "-")
+                        + " displayRequired=" + Native.DisplayRequired() + " fullscreenFg=" + Native.ForegroundIsFullscreen()
+                        + " fgApp=" + (fgApp ?? "-") + " lastPhysical=" + (input != null ? input.LastSource : "-")
+                        + " lastController=" + (Controllers.LastSource ?? "-"));
+                }
+                if (idle >= opt.IdleSeconds * 1000) { Program.Log("veil shown after " + idle / 1000 + "s idle"); ShowSaver(700); }
             }
             catch (Exception ex) { Program.Log("tick error: " + ex); }
         }
@@ -474,7 +675,7 @@ namespace IdleVeil
             if (opt.HideCursor) CursorHider.Hide();
             graceMs = grace;
             shownAt = Environment.TickCount;
-            inputAtShow = Native.LastInputTick();
+            inputAtShow = InputTick();
         }
 
         string shownMode;
@@ -494,6 +695,15 @@ namespace IdleVeil
             form.Close();
             form.Dispose();
             form = null;
+            detachRetryAt = 0;
+            if (DisplayDetach.IsDetached)
+            {
+                DisplayDetach.Reattach();
+                // Give Windows a moment to bring the monitor back before moving windows onto it.
+                var later = new System.Windows.Forms.Timer { Interval = 1500 };
+                later.Tick += delegate { later.Stop(); later.Dispose(); DisplayDetach.RestoreWindows(); };
+                later.Start();
+            }
         }
     }
 
@@ -531,8 +741,11 @@ namespace IdleVeil
             oldBufBmp = Native.SelectObject(bufDC, bufBmp);
             Native.PatBlt(bufDC, 0, 0, w, h, Native.BLACKNESS);
 
-            anim = mode == "matrix" ? (IAnimation)new MatrixRain(Bounds.Size) : new Mystify(Bounds.Size);
-            frame.Interval = Math.Max(10, 1000 / Math.Max(1, fps));
+            anim = mode == "matrix" ? (IAnimation)new MatrixRain(Bounds.Size)
+                 : mode == "blank" ? (IAnimation)new Blank(Bounds.Size)
+                 : new Mystify(Bounds.Size);
+            // Blank never changes: redraw rarely, just to stay on top.
+            frame.Interval = mode == "blank" ? 500 : Math.Max(10, 1000 / Math.Max(1, fps));
             frame.Tick += delegate { RenderFrame(); };
         }
 
@@ -638,6 +851,16 @@ namespace IdleVeil
             }
             base.Dispose(disposing);
         }
+    }
+
+    // Pure black: on an OLED, black pixels are switched off.
+    class Blank : IAnimation
+    {
+        readonly int w, h;
+        public Blank(Size size) { w = size.Width; h = size.Height; }
+        public void Step() { }
+        public void Draw(IntPtr hdc) { Native.PatBlt(hdc, 0, 0, w, h, Native.BLACKNESS); }
+        public void Dispose() { }
     }
 
     class MatrixRain : IAnimation

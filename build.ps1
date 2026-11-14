@@ -75,7 +75,7 @@ $w.Close()
 $appExe = Join-Path $obj 'IdleVeil.exe'
 & $csc /nologo /target:winexe /optimize+ /out:"$appExe" /win32icon:"$ico" `
     /r:System.Windows.Forms.dll /r:System.Drawing.dll `
-    (Join-Path $root 'src\IdleVeil.cs') $versionCs
+    (Get-ChildItem (Join-Path $root 'src') -Filter *.cs).FullName $versionCs
 if ($LASTEXITCODE) { throw "IdleVeil.exe build failed" }
 
 # ---- installer (embeds the app) ----
