@@ -42,7 +42,8 @@ IdleVeil lives in the system tray (you may need to click the `^` arrow to see it
 | Menu item | What it does |
 | --- | --- |
 | **Show now** | Starts the animation right away (double-clicking the icon does the same) |
-| **Animation** | Random, Matrix rain, Mystify, Starfield, Aurora, Fireflies, Fire, Snow, Game of Life, Plasma, Digital clock, or Blank (black). Each screen gets its own copy, sized for that monitor |
+| **Animation** | Random, Matrix rain, Mystify, Starfield, Aurora, Fireflies, Fire, Snow, Game of Life, Plasma, Digital clock (also LED, Neon, Analog and Music clocks), the music visualizers Spectrum, Oscilloscope, Oscilloscope ring, Radial, Tunnel and Ripples, Music (a visualizer while something plays, a clock when it is quiet), or Blank (black). Each screen gets its own copy, sized for that monitor |
+| **Music mode** | Which visualizer the Music animation shows while sound plays, and which clock it shows when it is quiet (see [docs/music-scenes.md](docs/music-scenes.md)) |
 | **Start after** | Idle time before it appears: 1 to 60 minutes |
 | **Hide cursor** | Hide the mouse pointer while the animation is showing |
 | **Ignore input from apps** | Only real mouse, keyboard and controller input counts (on by default). Turn off if you use remote-control tools that should count as you being here |
@@ -72,7 +73,8 @@ IdleVeil.exe [options]
   --idle <seconds>             Idle time before the animation starts (default 300)
   --mode <id>                  Animation to show (default random): random, matrix,
                                mystify, starfield, aurora, spectrum, fireflies, fire,
-                               snow, life, plasma, clock, blank
+                               snow, life, plasma, clock, clock-led, clock-neon, clock-analog,
+                               clock-music, scope, scopering, radial, tunnel, ripples, music, blank
   --screens <m>                Multi-monitor layout for GPU scenes: each (default),
                                span, mirror, perscreen
   --watch <file>               Treat growth of this file as activity, e.g. a log

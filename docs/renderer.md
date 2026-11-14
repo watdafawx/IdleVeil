@@ -485,9 +485,9 @@ pwsh -NoProfile -File .\build.ps1 -Version 1.2.0-dev
 | `snow` | `Snow` | `SpriteBatch` dots (like Fireflies) with wind drift. In span mode, spawn above each screen's top edge (`Setup.Screens`). Optional: a ground pile in a `GpuTexture`. |
 | `fire` | `Fire` | Keep the heat grid on the CPU, upload it to a `GpuTexture` each frame, palette lookup + smoothing in a `FullscreenPass` (`SampLinear`). Per-screen y (flames rise from each screen's bottom). |
 | `life` | `Life` | CPU grid → `GpuTexture` (`SampPoint`). Draw rounded cells with `sdRoundBox(frac(uv*size))`, and fade between generations in the shader with two textures. |
-| `clock` + styles | `DigitalClock` | `SceneLayout.PerScreen` + `TextBatch`. Position = centre + `Burn` + a slow wander; colour through `hsv` drift. Add other styles as extra `GlyphDist` shapes. |
+| `clock` + styles | `DigitalClock` | **Ported** (clock, clock-led, clock-neon, clock-analog, clock-music, music). See [music-scenes.md](music-scenes.md). |
 | `mystify` | `Mystify` (IdleVeil.cs) | `SpriteBatch.Add` segments (glow, Add blend) for the polygons and trails. Bounce inside the visible screens. |
 | `matrix` | `MatrixRain` (IdleVeil.cs) | Glyph columns: either a glyph atlas `GpuTexture` drawn per cell in a `FullscreenPass`, or a new `Hlsl.Glyphs`-style SDF set. Per-column state on the CPU, uploaded as a small texture. |
-| music visualizers (deckviz) | deckviz source (`saver.rs`, `hd.wgsl`) | Follow `SpectrumScene`: `FullscreenPass` reading `Band/Peak/Wave`, plus `AudioIds`. Use `Audio.w` (beat) for pulses and keep the idle breathing. |
+| music visualizers (deckviz) | deckviz source (`saver.rs`, `hd.wgsl`) | **Ported** (scope, scopering, radial, tunnel, ripples). See [music-scenes.md](music-scenes.md). |
 
 Once all of these are ported, the GDI path is only used as the fallback.
