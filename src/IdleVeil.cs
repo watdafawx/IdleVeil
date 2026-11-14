@@ -242,6 +242,7 @@ namespace IdleVeil
         public bool AfterUpdate;                  // started by the updater; wait for the old copy to quit
         public bool Debug;                        // log idle state every 10 s
         public int OffAfterSeconds = 300;         // how long after the veil appears
+        public bool AudioTest;                    // --audio-test: log loopback levels for 5 s
         public bool Exit;
 
         static string SettingsPath { get { return AppPaths.Settings; } }
@@ -316,6 +317,7 @@ namespace IdleVeil
                 else if (k == "--off-monitor") { o.OffMonitor = v; i++; }
                 else if (k == "--off-after") { o.OffAfterSeconds = int.Parse(v); i++; }
                 else if (k == "--stats") SaverForm.Stats = true;
+                else if (k == "--audio-test") o.AudioTest = true;
                 else if (k == "--exit") o.Exit = true;
                 else if (k == "--after-update") o.AfterUpdate = true;
             }
@@ -357,6 +359,11 @@ namespace IdleVeil
             // blank: put the user's cursors back before anything else.
             CursorHider.Restore();
             var opt = Options.Parse(args);
+            if (opt.AudioTest)
+            {
+                AudioFeed.AudioTest(5);
+                return;
+            }
             if (opt.RenderTestDir != null)
             {
                 SetDpiAware();
