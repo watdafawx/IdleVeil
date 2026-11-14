@@ -7,6 +7,7 @@ namespace IdleVeil
 {
     sealed class ClockNeonScene : SegClockScene
     {
+        protected override float AmbientHue { get { return 0.93f; } }
         protected override void OnStyleInit()
         {
             HeightU = 300f;

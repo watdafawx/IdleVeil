@@ -6,6 +6,7 @@ namespace IdleVeil
 {
     sealed class ClockAnalogScene : ClockScene
     {
+        protected override float AmbientHue { get { return 0.58f; } }
         const float RadiusU = 370f;
         FullscreenPass pass;
         SceneConstants k;
@@ -103,7 +104,7 @@ float4 PS(float4 pos : SV_Position) : SV_Target
             k[7] = Mix;
         }
 
-        public override void Render(RenderView view)
+        protected override void RenderClock(RenderView view)
         {
             if (Mix <= 0.001f) return;
             k.Bind();

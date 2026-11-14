@@ -8,6 +8,8 @@ namespace IdleVeil
 {
     sealed class ClockMusicScene : SegClockScene
     {
+        protected override float AmbientHue { get { return 0.52f + 0.12f * bassSm; } }
+        protected override float AmbientLevel(FrameContext f) { return 0.8f + 0.8f * bassSm + 1.2f * beatSm; }
         const int Bars = 40;
         static readonly string[] Digits = { "0", "1", "2", "3", "4", "5", "6", "7", "8", "9" };
         SpriteBatch sprites;
@@ -93,10 +95,10 @@ namespace IdleVeil
             }
         }
 
-        public override void Render(RenderView view)
+        protected override void RenderClock(RenderView view)
         {
             sprites.Draw(BlendMode.Add);
-            base.Render(view);
+            base.RenderClock(view);
         }
     }
 }

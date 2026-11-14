@@ -4,10 +4,12 @@
 //   SegClockScene  the clock drawn with the engine's seven-segment glyphs (TextBatch); the plain
 //                  clock, the neon clock and the music clock only differ in a few settings
 //
-// Layout is per screen: in span mode every monitor shows its own clock (see docs/music-scenes.md
-// for why). Each clock wanders on two slow Lissajous curves (periods of 3 to 6 minutes, so it
-// never repeats a path), plus the host's Burn drift, so a pixel inside a stroke is only lit for
-// a few seconds. Colours are dim and turn slowly.
+// Layout is World. On one screen the clock owns it. In span mode the clock sits whole on one
+// screen (SceneSetup.ClockScreen: chosen in settings, else the largest non-OLED one), so no digit
+// is ever cut by a bezel or lost in a hole, and ClockAmbient ties the other screens in with dim
+// drifting motes and a once-a-minute sweep. The clock wanders on two slow Lissajous curves
+// (periods of 3 to 6 minutes, so it never repeats a path), plus the host's Burn drift, so a
+// pixel inside a stroke is only lit for a few seconds. Colours are dim and turn slowly.
 using System;
 
 namespace IdleVeil
@@ -30,20 +32,44 @@ namespace IdleVeil
         float lastMix;
         static double testTime = -2;
 
-        public override SceneLayout Layout { get { return SceneLayout.PerScreen; } }
+        // World: in span mode the clock sits whole on one screen (Stage) and an ambient layer
+        // runs across all of them, so no digit is ever cut by a bezel or lost in a hole.
+        public override SceneLayout Layout { get { return SceneLayout.World; } }
+
+        // The screen the clock lives on: the clock screen in span mode, else the world.
+        protected RectF Stage;
+        ClockAmbient ambient;
 
         // Extent of the whole clock in world units (so the drift keeps it on screen).
         protected abstract float ExtentW { get; }
         protected abstract float ExtentH { get; }
         protected virtual void OnUpdateClock(FrameContext f) { }
         protected virtual void OnInitClock() { }
+        protected abstract void RenderClock(RenderView view);
+        // Base hue of the ambient layer (span mode), and how bright it is this frame.
+        protected virtual float AmbientHue { get { return 0.5f; } }
+        protected virtual float AmbientLevel(FrameContext f) { return 1f; }
 
         protected override void OnInit()
         {
             px1 = Rng.Next() * 6.2832f; px2 = Rng.Next() * 6.2832f;
             py1 = Rng.Next() * 6.2832f; py2 = Rng.Next() * 6.2832f;
             hueOff = Rng.Next() * 6.2832f;
+            Stage = World;
+            if (Setup.Spanning)
+            {
+                Stage = Setup.Screens[Math.Max(0, Math.Min(Setup.Screens.Length - 1, Setup.ClockScreen))];
+                ambient = new ClockAmbient(Gpu, Setup, Rng);
+                // Span U follows the tallest screen; the clock is sized for its own screen, as in Each.
+                U = Stage.H / 1080f;
+            }
             OnInitClock();
+        }
+
+        public override void Render(RenderView view)
+        {
+            if (ambient != null) ambient.Draw();
+            RenderClock(view);
         }
 
         // Test hook: IDLEVEIL_TEST_TIME=HH:mm:ss starts the clock there instead of at the real time.
@@ -91,14 +117,17 @@ namespace IdleVeil
             if (Change < 1f) Change = Math.Min(1f, Change + dt / 0.8f);
 
             // Drift: two periods per axis that don't line up. The amplitude keeps the clock on the screen.
-            float ax = Math.Min(World.W * 0.20f, Math.Max(0f, (World.W - ExtentW) * 0.5f - 24f * U)) * 0.92f;
-            float ay = Math.Min(World.H * 0.20f, Math.Max(0f, (World.H - ExtentH) * 0.5f - 24f * U)) * 0.92f;
+            // In span mode the clock is sized by U of the tallest screen; on a smaller clock screen
+            // the extent may not fit, and the drift amplitude then simply drops to zero (Burn stays).
+            float ax = Math.Min(Stage.W * 0.20f, Math.Max(0f, (Stage.W - ExtentW) * 0.5f - 24f * U)) * 0.92f;
+            float ay = Math.Min(Stage.H * 0.20f, Math.Max(0f, (Stage.H - ExtentH) * 0.5f - 24f * U)) * 0.92f;
             float sx = 0.65f * (float)Math.Sin(t * 6.2831853f / 197f + px1) + 0.35f * (float)Math.Sin(t * 6.2831853f / 311f + px2);
             float sy = 0.65f * (float)Math.Sin(t * 6.2831853f / 241f + py1) + 0.35f * (float)Math.Sin(t * 6.2831853f / 373f + py2);
-            Cx = World.CenterX + sx * ax + f.BurnX;
-            Cy = World.CenterY + sy * ay + f.BurnY;
+            Cx = Stage.CenterX + sx * ax + f.BurnX;
+            Cy = Stage.CenterY + sy * ay + f.BurnY;
             HueShift = 0.04f * (float)Math.Sin(t / 110f + hueOff);
 
+            if (ambient != null) ambient.Update(f, Seconds, AmbientHue + HueShift, Mix * AmbientLevel(f));
             OnUpdateClock(f);
         }
 
@@ -248,7 +277,7 @@ namespace IdleVeil
         // For subclasses that draw extra text.
         protected TextBatch Text { get { return text; } }
 
-        public override void Render(RenderView view)
+        protected override void RenderClock(RenderView view)
         {
             text.Draw();
         }
