@@ -11,7 +11,7 @@ namespace IdleVeil
         public static readonly string[][] Groups =
         {
             new[] { "starfield", "aurora", "fireflies", "plasma", "snow", "fire" },
-            new[] { "music", "spectrum", "scope", "scopering", "radial", "tunnel", "ripples" },
+            new[] { "music", "spectrum", "scope", "scopering", "radial", "tunnel", "ripples", "waterfall", "skyline", "burst", "lissajous", "ridges" },
             new[] { "clock", "clock-led", "clock-neon", "clock-analog", "clock-music" },
             new[] { "matrix", "mystify", "life", "blank" },
         };
@@ -23,6 +23,7 @@ namespace IdleVeil
             "matrix", "mystify", "starfield", "aurora", "fireflies", "fire", "snow", "life", "plasma",
             "clock", "clock-led", "clock-neon", "clock-analog",
             "spectrum", "scope", "scopering", "radial", "tunnel", "ripples",
+            "waterfall", "skyline", "burst", "lissajous", "ridges",
         };
 
         public static string Label(string id)

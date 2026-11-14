@@ -213,7 +213,7 @@ namespace IdleVeil
     static class GpuScenes
     {
         // Ported scenes, in tray order. Add new ids here and in Create.
-        public static readonly string[] Ids = { "starfield", "aurora", "fireflies", "plasma", "snow", "fire", "life", "mystify", "matrix", "spectrum", "scope", "scopering", "radial", "tunnel", "ripples", "clock", "clock-led", "clock-neon", "clock-analog", "clock-music", "music", "blank" };
+        public static readonly string[] Ids = { "starfield", "aurora", "fireflies", "plasma", "snow", "fire", "life", "mystify", "matrix", "spectrum", "scope", "scopering", "radial", "tunnel", "ripples", "waterfall", "skyline", "burst", "lissajous", "ridges", "clock", "clock-led", "clock-neon", "clock-analog", "clock-music", "music", "blank" };
 
         public static IGpuScene Create(string id)
         {
@@ -234,6 +234,11 @@ namespace IdleVeil
                 case "radial": return new RadialScene();
                 case "tunnel": return new TunnelScene();
                 case "ripples": return new RipplesScene();
+                case "waterfall": return new WaterfallScene();
+                case "skyline": return new SkylineScene();
+                case "burst": return new BurstScene();
+                case "lissajous": return new LissajousScene();
+                case "ridges": return new RidgesScene();
                 case "clock": return new ClockSevenSegScene();
                 case "clock-led": return new ClockLedScene();
                 case "clock-neon": return new ClockNeonScene();
@@ -247,7 +252,7 @@ namespace IdleVeil
 
         public static bool Has(string id) { return Array.IndexOf(Ids, id) >= 0; }
 
-        // False for scenes laid out per screen (clocks, spectrum, scope, music): span shows them as each.
+        // False for scenes laid out per screen: span shows them as each. Every scene is World now.
         public static bool CanSpan(string id)
         {
             IGpuScene s = Create(id);
@@ -256,7 +261,7 @@ namespace IdleVeil
         }
 
         // Scenes that read Audio / AudioData. The loopback capture only runs while one is on screen.
-        public static readonly string[] AudioIds = { "spectrum", "scope", "scopering", "radial", "tunnel", "ripples", "clock-music", "music" };
+        public static readonly string[] AudioIds = { "spectrum", "scope", "scopering", "radial", "tunnel", "ripples", "waterfall", "skyline", "burst", "lissajous", "ridges", "clock-music", "music" };
 
         public static bool UsesAudio(string id) { return Array.IndexOf(AudioIds, id) >= 0; }
     }
