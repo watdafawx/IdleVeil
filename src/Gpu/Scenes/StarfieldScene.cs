@@ -22,8 +22,8 @@ namespace IdleVeil
 
         protected override void OnInit()
         {
-            // Density per area of the whole world: about 900 stars per 1080p screen.
-            count = Math.Max(300, Math.Min(12000, (int)(900f * World.W * World.H / (1920f * 1080f))));
+            // Density per area of the whole world: about 1300 stars per 1080p screen.
+            count = Math.Max(400, Math.Min(16000, (int)(1300f * World.W * World.H / (1920f * 1080f))));
             sx = new float[count]; sy = new float[count]; sz = new float[count];
             tint = new float[count]; twinkle = new float[count];
             reach = 0.36f * (float)Math.Sqrt(World.W * World.H);
@@ -79,7 +79,7 @@ namespace IdleVeil
 
                 float near = 1f - z;                          // 0 far .. 1 close
                 float birth = Math.Min(1f, near * 6f);        // fade in from the distance
-                float b = birth * (0.10f + 0.80f * near * near) * (0.85f + 0.15f * (float)Math.Sin(t * 2.3f + twinkle[i]));
+                float b = birth * (0.16f + 0.90f * near * near) * (0.85f + 0.15f * (float)Math.Sin(t * 2.3f + twinkle[i]));
                 b *= 1f + 0.6f * warp;
                 if (b < 0.01f) continue;
                 float radius = U * (0.45f + 1.7f * near * near * near);

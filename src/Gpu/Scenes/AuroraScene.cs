@@ -38,15 +38,19 @@ float3 Curtain(float xd, float yd, float layer)
     float base = 0.50 + 0.07 * layer
                + 0.075 * sin(x * 1.15 + t * (0.031 + 0.011 * layer))
                + 0.10 * (fbm(float2(x * 0.7 - t * 0.012, layer * 3.7), 3) - 0.5);
-    // Folds: shift x by a slow noise so the vertical rays bend like cloth.
+    // Small hem ripples, so the lower edge folds like cloth instead of a smooth line.
+    base += 0.016 * sin(x * 7.0 + t * 0.21 + layer * 2.0) + 0.008 * sin(x * 15.0 - t * 0.33 + layer);
+    float d = yd - base;                        // > 0 below the edge
+    // Rays: thin streaks across x (bent by a slow fold), whose brightness also varies along
+    // their length, so they read as shimmering filaments rather than solid columns.
     float fold = fbm(float2(x * 1.4 + t * 0.018, t * 0.025 + layer * 2.0), 3);
-    float rx = (x + fold * 0.9) * 26.0;
-    float rays = fbm(float2(rx, t * 0.11 + layer * 9.0), 4);
-    rays = saturate(rays * 1.6 - 0.35);
-    rays = 0.25 + 1.25 * rays * rays;
+    float rx = (x + fold * 0.9) * 55.0;
+    float r1 = noise(float2(rx, d * 0.6 + t * 0.14 + layer * 9.0));
+    float r2 = noise(float2(rx * 2.4 + 17.0, d * 1.2 - t * 0.21 + layer * 5.0));
+    float rays = saturate((r1 * 0.65 + r2 * 0.35) * 1.7 - 0.45);
+    rays = 0.22 + 1.9 * rays * rays;
     // Where along the sky the curtain is present at all.
     float presence = saturate(0.35 + 0.9 * (fbm(float2(x * 0.33 + t * 0.006, 40.0 + layer), 3) - 0.35) * 2.0);
-    float d = yd - base;                        // > 0 below the edge
     float below = exp(-d * d / 0.0011);         // crisp-ish lower hem
     float above = exp(d / (0.17 + 0.07 * layer)) * (1.0 - exp(d * 40.0)); // long soft fade upwards
     float shape = d > 0 ? below : max(above, exp(-d * d / 0.0011));
@@ -68,9 +72,9 @@ float4 PS(float4 pos : SV_Position) : SV_Target
     // Night sky: near-black at the zenith, a faint blue haze towards the bottom.
     float3 col = lerp(float3(0.004, 0.006, 0.016), float3(0.012, 0.018, 0.034), saturate(yd));
     col += Stars(w);
-    float3 aur = Curtain(xd, yd, 0.0) * 0.34 + Curtain(xd, yd, 1.0) * 0.22 + Curtain(xd, yd, 2.0) * 0.14;
-    // Soft shoulder instead of a hard clip: bright spots roll off, the frame stays dark.
-    aur = aur / (1.0 + aur * 1.4);
+    float3 aur = Curtain(xd, yd, 0.0) * 0.58 + Curtain(xd, yd, 1.0) * 0.36 + Curtain(xd, yd, 2.0) * 0.22;
+    // Soft shoulder instead of a hard clip: bright spots roll off (peaks stay under ~0.55).
+    aur = aur / (1.0 + aur * 1.2);
     col += aur;
     return Out(col, pos.xy);
 }
