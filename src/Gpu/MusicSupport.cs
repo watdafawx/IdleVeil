@@ -1,6 +1,6 @@
 // Everything the music scenes need from the rest of the app, in one place so the shared files
 // (IdleVeil.cs, Savers.cs) only get one-line hooks:
-//   MusicConfig  which visualizer and clock "music" mode uses (tray menu, settings), labels of
+//   MusicConfig  which visualizer and clock "music" mode uses (settings), labels of
 //                the new scene ids, the GDI fallback, and the random picks that must not choose
 //                audio-reactive scenes while nothing is playing
 //   SoundProbe   "is anything playing right now?", asked of the Windows audio meter (no capture)
@@ -46,30 +46,6 @@ namespace IdleVeil
             value = (value ?? "").Trim().ToLowerInvariant();
             if (key == "musicviz" && Array.IndexOf(Visualizers, value) >= 0) Viz = value;
             else if (key == "musicclock" && Array.IndexOf(Clocks, value) >= 0) Clock = value;
-        }
-
-        // Tray: Music mode > what to show while music plays / while quiet.
-        public static ToolStripMenuItem BuildMenu(EventHandler changed)
-        {
-            var menu = new ToolStripMenuItem("Music mode");
-            menu.DropDownItems.Add(new ToolStripMenuItem("While music plays:") { Enabled = false });
-            foreach (string id in Visualizers)
-            {
-                string v = id;
-                var item = new ToolStripMenuItem("    " + Label(v), null, delegate(object s, EventArgs e) { Viz = v; changed(s, e); });
-                item.Checked = Viz == v;
-                menu.DropDownItems.Add(item);
-            }
-            menu.DropDownItems.Add(new ToolStripSeparator());
-            menu.DropDownItems.Add(new ToolStripMenuItem("When it is quiet:") { Enabled = false });
-            foreach (string id in Clocks)
-            {
-                string c = id;
-                var item = new ToolStripMenuItem("    " + Label(c), null, delegate(object s, EventArgs e) { Clock = c; changed(s, e); });
-                item.Checked = Clock == c;
-                menu.DropDownItems.Add(item);
-            }
-            return menu;
         }
 
         // GDI cannot draw the new scenes. A clock id, or music mode, falls back to the plain clock.
@@ -133,6 +109,9 @@ namespace IdleVeil
             Program.Log("sound probe: " + (last ? "playing" : "quiet"));
             return last;
         }
+
+        // The same check without the cache or the log line (polled by the settings window).
+        public static bool IsPlayingQuiet() { return Measure(); }
 
         static bool Measure()
         {

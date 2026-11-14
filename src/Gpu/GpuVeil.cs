@@ -90,6 +90,7 @@ namespace IdleVeil
         public Rectangle Area { get; private set; }
         public bool Broken { get { return broken; } }
         public static bool Capturable;   // --capturable: don't exclude from capture (to screenshot the overlay while testing)
+        public static volatile string LastAdapter, LastError;   // for the settings window's renderer status
 
         readonly GpuScreen[] screens;
         readonly ScreenMode mode;
@@ -125,12 +126,13 @@ namespace IdleVeil
         // Starts the overlay, or returns null (with the reason logged) so the caller can use GDI.
         public static IVeil TryCreate(GpuScreen[] screens, ScreenMode mode, string[] sceneIds, int fpsCap)
         {
-            if (disabled && Environment.TickCount - disabledUntil < 0) return null;
+            if (disabled && Environment.TickCount - disabledUntil < 0) { LastError = "resting after a failure: " + LastError; return null; }
             disabled = false;
             var v = new GpuVeil(screens, mode, sceneIds, fpsCap);
             v.thread.Start();
             if (!v.ready.WaitOne(8000)) v.error = v.error ?? "timed out starting";
-            if (v.error == null) return v;
+            if (v.error == null) { LastAdapter = v.gpu != null ? v.gpu.AdapterName : "?"; LastError = null; return v; }
+            LastError = v.error;
             Program.Log("GPU renderer unavailable, using GDI: " + v.error);
             v.Dispose();
             disabled = true;

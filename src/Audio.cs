@@ -251,8 +251,19 @@ namespace IdleVeil
             }
         }
 
-        // Called once per frame by the renderer. The only writer of the published snapshots.
+        // Called once per frame by the renderer. The only writer of the published snapshots. The feed
+        // is shared (the overlay, settings-window thumbnails, its music indicator): if another thread is
+        // already updating, its result is used.
         public void Update()
+        {
+            if (!Monitor.TryEnter(updateGate)) return;
+            try { UpdateCore(); }
+            finally { Monitor.Exit(updateGate); }
+        }
+
+        readonly object updateGate = new object();
+
+        void UpdateCore()
         {
             double now = clock.Elapsed.TotalSeconds;
             float raw = (float)Math.Max(0.0, now - lastUpdate);

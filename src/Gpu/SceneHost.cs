@@ -108,10 +108,15 @@ namespace IdleVeil
 
         public float Time { get { return clock; } }
 
+        readonly float minWorldU;
+
         // screens: real monitors; sceneIds: the scene for each (all equal except in perscreen mode).
-        public SceneHost(Gpu gpu, GpuScreen[] screens, ScreenMode mode, string[] sceneIds, IAudioSource audioSource)
+        // minWorldU: thumbnails (settings window) draw World-layout scenes (stars, snow, fireflies) at
+        // least this big, so a tiny preview shows a close-up instead of single pixels.
+        public SceneHost(Gpu gpu, GpuScreen[] screens, ScreenMode mode, string[] sceneIds, IAudioSource audioSource, float minWorldU = 0f)
         {
             this.gpu = gpu;
+            this.minWorldU = minWorldU;
             this.audioSource = audioSource;
             targets = new Target[screens.Length];
             fade = new FullscreenPass(gpu, "float4 PS(float4 pos : SV_Position) : SV_Target { return float4(0, 0, 0, 1.0 - Fade); }");
@@ -178,6 +183,7 @@ namespace IdleVeil
         Instance Make(string id, RectF world, RectF[] visible, float u, ScreenMode mode)
         {
             var inst = new Instance { Id = id, Scene = GpuScenes.Create(id) ?? new BlankScene() };
+            if (inst.Scene.Layout == SceneLayout.World) u = Math.Max(u, minWorldU);
             uint seed = (uint)seeds.Next(1, int.MaxValue);
             inst.Scene.Init(gpu, new SceneSetup { World = world, Screens = visible, U = u, Seed = seed, Mode = mode });
             inst.Frame.World = world;
