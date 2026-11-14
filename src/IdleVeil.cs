@@ -384,7 +384,8 @@ namespace IdleVeil
             if (opt.AfterUpdate) Notify("IdleVeil updated", "You're now on version " + AppInfo.Version + ".");
             // Shortly after start, then every 12 hours.
             updateTimer.Interval = 20000;
-            updateTimer.Tick += delegate { updateTimer.Interval = 12 * 3600 * 1000; CheckForUpdates(false); };
+            // The old exe may still have been locked at start-up (the previous copy was still exiting), so retry here.
+            updateTimer.Tick += delegate { Updater.Cleanup(); updateTimer.Interval = 12 * 3600 * 1000; CheckForUpdates(false); };
             updateTimer.Start();
         }
 
