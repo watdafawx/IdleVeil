@@ -44,7 +44,7 @@ namespace IdleVeil
                 case "life": return new Life(size);
                 case "plasma": return new Plasma(size);
                 case "clock": return new DigitalClock(size);
-                default: return null;
+                default: return MusicConfig.GdiFallback(mode, size);
             }
         }
 
@@ -64,11 +64,11 @@ namespace IdleVeil
                 case "plasma": return "Plasma";
                 case "clock": return "Digital clock";
                 case "spectrum": return "Spectrum (music)";
-                default: return "Random";
+                default: return MusicConfig.Label(mode) ?? "Random";
             }
         }
 
-        public static string Pick(Random rng) { return Animations[rng.Next(Animations.Length)]; }
+        public static string Pick(Random rng) { return MusicConfig.Pick(rng, Animations); }
     }
 
     // xorshift32, the same generator deckviz uses, so the motion matches the original.
