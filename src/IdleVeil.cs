@@ -203,6 +203,8 @@ namespace IdleVeil
         public bool IgnoreInjected = true;        // only real mouse/keyboard input counts as activity
         public string OffMonitor = "";            // EDID id of the monitor to turn off (detach), e.g. AUS2740
         public List<string> NoVeilApps = new List<string>();   // never veil while one of these exes is focused
+        public bool AutoUpdate = true;            // install new releases from GitHub automatically
+        public bool AfterUpdate;                  // started by the updater; wait for the old copy to quit
         public bool Debug;                        // log idle state every 10 s
         public int OffAfterSeconds = 300;         // how long after the veil appears
         public bool Exit;
@@ -228,6 +230,7 @@ namespace IdleVeil
                     else if (k == "offmonitor") OffMonitor = v;
                     else if (k == "offafter") OffAfterSeconds = int.Parse(v);
                     else if (k == "debug") Debug = v == "1";
+                    else if (k == "autoupdate") AutoUpdate = v == "1" || v.ToLowerInvariant() == "true";
                     else if (k == "noveilapps")
                     {
                         NoVeilApps.Clear();
@@ -245,7 +248,8 @@ namespace IdleVeil
                 File.WriteAllLines(SettingsPath, new[] {
                     "mode=" + Mode, "idle=" + IdleSeconds, "hidecursor=" + (HideCursor ? "1" : "0"),
                     "ignoreinjected=" + (IgnoreInjected ? "1" : "0"), "keeponfor=" + KeepOnFor,
-                    "offmonitor=" + OffMonitor, "offafter=" + OffAfterSeconds, "noveilapps=" + string.Join(",", NoVeilApps.ToArray()), "debug=" + (Debug ? "1" : "0") });
+                    "offmonitor=" + OffMonitor, "offafter=" + OffAfterSeconds, "noveilapps=" + string.Join(",", NoVeilApps.ToArray()), "autoupdate=" + (AutoUpdate ? "1" : "0"),
+                    "debug=" + (Debug ? "1" : "0") });
             }
             catch (Exception ex) { Program.Log("settings save error: " + ex.Message); }
         }
@@ -268,6 +272,7 @@ namespace IdleVeil
                 else if (k == "--off-after") { o.OffAfterSeconds = int.Parse(v); i++; }
                 else if (k == "--stats") SaverForm.Stats = true;
                 else if (k == "--exit") o.Exit = true;
+                else if (k == "--after-update") o.AfterUpdate = true;
             }
             return o;
         }
@@ -305,12 +310,18 @@ namespace IdleVeil
             }
             bool created;
             var mutex = new Mutex(true, opt.Preview ? "Local\\IdleVeilPreview" : "Local\\IdleVeil", out created);
+            if (!created && opt.AfterUpdate)
+            {
+                // The previous version is still shutting down (putting a monitor back, restoring windows).
+                try { created = mutex.WaitOne(20000); }
+                catch (AbandonedMutexException) { created = true; }
+            }
             if (!created) return;
             // Per-monitor DPI awareness, so screen sizes are always real pixels even if display
             // scaling changes after start-up (e.g. a different screen while the TV is off).
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); }   // PER_MONITOR_AWARE_V2, Windows 10 1703+
             catch (EntryPointNotFoundException) { Native.SetProcessDPIAware(); }
-            if (!opt.Preview) { opt.LoadSettings(); DisplayDetach.RecoverAfterCrash(); }
+            if (!opt.Preview) { opt.LoadSettings(); DisplayDetach.RecoverAfterCrash(); Updater.Cleanup(); }
             CursorHider.Restore();
             Log("started v" + AppInfo.Version + ": idle=" + opt.IdleSeconds + "s mode=" + opt.Mode + " watch=" + (opt.WatchFile ?? "-")
                 + " displayRequiredNow=" + Native.DisplayRequired());
@@ -352,7 +363,7 @@ namespace IdleVeil
             tick.Start();
             Application.ApplicationExit += delegate { CursorHider.Restore(); Program.ReattachNow(); if (tray != null) tray.Visible = false; };
             if (opt.Preview) ShowSaver(700);
-            else { CreateTray(); ListenForExit(); }
+            else { CreateTray(); ListenForExit(); StartUpdateChecks(); }
         }
 
         void ListenForExit()
@@ -360,6 +371,74 @@ namespace IdleVeil
             var ui = SynchronizationContext.Current;
             exitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ExitEventName);
             ThreadPool.RegisterWaitForSingleObject(exitEvent, delegate { ui.Post(delegate { Quit(); }, null); }, null, -1, true);
+        }
+
+        // ---- updates ----
+
+        readonly System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer();
+        UpdateInfo pendingUpdate;
+        bool updating;
+
+        void StartUpdateChecks()
+        {
+            if (opt.AfterUpdate) Notify("IdleVeil updated", "You're now on version " + AppInfo.Version + ".");
+            // Shortly after start, then every 12 hours.
+            updateTimer.Interval = 20000;
+            updateTimer.Tick += delegate { updateTimer.Interval = 12 * 3600 * 1000; CheckForUpdates(false); };
+            updateTimer.Start();
+        }
+
+        void CheckForUpdates(bool manual)
+        {
+            if (updating) return;
+            Updater.CheckAsync(delegate (UpdateInfo u, Exception err)
+            {
+                if (err != null)
+                {
+                    Program.Log("update check failed: " + err.Message);
+                    if (manual) Notify("Couldn't check for updates", err.Message);
+                    return;
+                }
+                if (u == null)
+                {
+                    Program.Log("update check: up to date");
+                    if (manual) Notify("IdleVeil is up to date", "You're on version " + AppInfo.Version + ".");
+                    return;
+                }
+                Program.Log("update check: " + u.Version + " available");
+                if (Updater.IsDevBuild())
+                {
+                    if (manual) Notify("IdleVeil " + u.Version + " is available", "This copy was built from source, so it won't replace itself.");
+                    return;
+                }
+                if (manual || opt.AutoUpdate) pendingUpdate = u;   // installed from OnTick once the veil is down
+                else Notify("IdleVeil " + u.Version + " is available", "Right-click the tray icon and choose Check for updates to install it.");
+            });
+        }
+
+        // Only swap the exe while nothing is showing and every monitor is on.
+        void MaybeInstallUpdate()
+        {
+            if (pendingUpdate == null || updating || form != null || DisplayDetach.IsDetached) return;
+            var u = pendingUpdate;
+            pendingUpdate = null;
+            updating = true;
+            Program.Log("installing update " + u.Version);
+            Updater.ApplyAsync(u, delegate (Exception err)
+            {
+                updating = false;
+                if (err == null) { Quit(); return; }
+                Program.Log("update failed: " + err.Message);
+                Notify("IdleVeil update failed", err.Message);
+            });
+        }
+
+        void Notify(string title, string text)
+        {
+            if (tray == null) return;
+            tray.BalloonTipTitle = title;
+            tray.BalloonTipText = text;
+            tray.ShowBalloonTip(5000);
         }
 
         void Quit()
@@ -450,6 +529,11 @@ namespace IdleVeil
             });
             startup.Checked = auto;
             items.Add(startup);
+
+            var autoUpd = new ToolStripMenuItem("Install updates automatically", null, delegate { opt.AutoUpdate = !opt.AutoUpdate; Changed(); });
+            autoUpd.Checked = opt.AutoUpdate;
+            items.Add(autoUpd);
+            items.Add(new ToolStripMenuItem("Check for updates (v" + AppInfo.Version + ")", null, delegate { CheckForUpdates(true); }));
             items.Add(new ToolStripMenuItem("About IdleVeil", null, delegate { About(); }));
             items.Add(new ToolStripMenuItem("Exit", null, delegate { Quit(); }));
         }
@@ -624,6 +708,7 @@ namespace IdleVeil
                 string fgApp = Native.ForegroundApp();
                 if (fgApp != null && form == null) lastFocusedApp = fgApp;
                 bool appKeepsOn = fgApp != null && opt.NoVeilApps.Contains(fgApp);
+                MaybeInstallUpdate();
                 long len = WatchLength();
                 bool logGrew = len != watchLen;
                 watchLen = len;

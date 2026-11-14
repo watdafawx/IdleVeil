@@ -74,7 +74,7 @@ $w.Close()
 # ---- app ----
 $appExe = Join-Path $obj 'IdleVeil.exe'
 & $csc /nologo /target:winexe /optimize+ /out:"$appExe" /win32icon:"$ico" `
-    /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+    /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll `
     (Get-ChildItem (Join-Path $root 'src') -Filter *.cs).FullName $versionCs
 if ($LASTEXITCODE) { throw "IdleVeil.exe build failed" }
 
@@ -94,5 +94,12 @@ New-Item -ItemType Directory $stage | Out-Null
 Copy-Item $appExe, (Join-Path $root 'README.md'), (Join-Path $root 'LICENSE') $stage -ErrorAction SilentlyContinue
 Remove-Item $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
+
+# ---- updater assets: the bare exe plus checksums (the app's self-updater downloads these) ----
+Copy-Item $appExe (Join-Path $dist 'IdleVeil.exe') -Force
+$sums = foreach ($f in 'IdleVeil.exe', "IdleVeil-Setup-$Version.exe", "IdleVeil-$Version-portable.zip") {
+    (Get-FileHash (Join-Path $dist $f) -Algorithm SHA256).Hash.ToLower() + '  ' + $f
+}
+Set-Content -Path (Join-Path $dist 'SHA256SUMS.txt') -Value ($sums -join "`n") -NoNewline
 
 Get-ChildItem $dist | ForEach-Object { "{0,-40} {1,8:N0} KB" -f $_.Name, ($_.Length / 1KB) }

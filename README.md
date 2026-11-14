@@ -15,6 +15,7 @@ IdleVeil shows a screensaver-style animation (Matrix rain, Mystify or plain blac
 - **Per-app exceptions.** Never shows while chosen apps (e.g. a game you watch AFK) are focused.
 - **Hides the mouse cursor** while the animation is showing (optional).
 - **Tray icon** for all settings: animation, idle time, pause, start with Windows.
+- **Updates itself** from GitHub releases, with every download checked against the release's SHA-256 checksums.
 - **Tiny and dependency-free:** a ~35 KB exe using the .NET Framework that's already part of Windows 10 and 11.
 
 ## Install
@@ -50,6 +51,8 @@ IdleVeil lives in the system tray (you may need to click the `^` arrow to see it
 | **Don't show while using** | Apps that stop the animation while they're focused. Focus the app, then open this menu and pick **Add** |
 | **Pause for 1 hour / Pause until resumed** | Temporarily stop it from appearing |
 | **Start with Windows** | Turn launching at sign-in on or off |
+| **Install updates automatically** | Download and install new releases from GitHub (on by default). Checked shortly after start, then every 12 hours; installs only while the animation isn't showing |
+| **Check for updates** | Check now, and install if there's a newer version |
 | **About IdleVeil** | Version, and where settings and the log are stored |
 | **Exit** | Quit IdleVeil |
 
@@ -120,6 +123,7 @@ src\IdleVeil.cs       the app (tray, idle logic, animations)
 src\PhysicalInput.cs  real vs injected mouse/keyboard input (Raw Input)
 src\Controllers.cs    game controller activity (XInput)
 src\DisplayDetach.cs  turning a monitor off and back on, restoring windows
+src\Updater.cs        self-update from GitHub releases
 installer\Setup.cs    the installer and uninstaller
 build.ps1             builds the icon, app, installer and zip
 ```
@@ -134,6 +138,10 @@ The source is limited to C# 5, since that's what the built-in compiler supports.
 - `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` hides it from screen capture (Windows 10 2004 or later).
 - Video playback is detected by checking whether any app has set `ES_DISPLAY_REQUIRED` while a fullscreen (not maximized) window has focus.
 - The cursor is hidden by temporarily swapping the system cursors for blank ones and restoring the user's cursor scheme afterwards (also on start-up, in case of a crash).
+
+## Releasing
+
+Push a tag like `v1.2.0`. The release workflow builds that version and attaches the setup exe, the portable zip, the bare `IdleVeil.exe` and `SHA256SUMS.txt` to a GitHub release. Running copies pick it up within 12 hours.
 
 ## License
 
