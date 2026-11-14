@@ -490,4 +490,6 @@ pwsh -NoProfile -File .\build.ps1 -Version 1.2.0-dev
 | `matrix` | `MatrixRain` (IdleVeil.cs) | Glyph columns: either a glyph atlas `GpuTexture` drawn per cell in a `FullscreenPass`, or a new `Hlsl.Glyphs`-style SDF set. Per-column state on the CPU, uploaded as a small texture. |
 | music visualizers (deckviz) | deckviz source (`saver.rs`, `hd.wgsl`) | Follow `SpectrumScene`: `FullscreenPass` reading `Band/Peak/Wave`, plus `AudioIds`. Use `Audio.w` (beat) for pulses and keep the idle breathing. |
 
+Ported so far: plasma, snow, fire, life, mystify and matrix (see the header comment of each file in `src/Gpu/Scenes/`).
+
 Once all of these are ported, the GDI path is only used as the fallback.

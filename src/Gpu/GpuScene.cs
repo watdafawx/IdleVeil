@@ -94,7 +94,7 @@ namespace IdleVeil
     static class GpuScenes
     {
         // Ported scenes, in tray order. Add new ids here and in Create.
-        public static readonly string[] Ids = { "starfield", "aurora", "fireflies", "spectrum", "blank" };
+        public static readonly string[] Ids = { "starfield", "aurora", "fireflies", "spectrum", "plasma", "snow", "fire", "life", "mystify", "matrix", "blank" };
 
         public static IGpuScene Create(string id)
         {
@@ -104,6 +104,12 @@ namespace IdleVeil
                 case "aurora": return new AuroraScene();
                 case "fireflies": return new FirefliesScene();
                 case "spectrum": return new SpectrumScene();
+                case "plasma": return new PlasmaScene();
+                case "snow": return new SnowScene();
+                case "fire": return new FireScene();
+                case "life": return new LifeScene();
+                case "mystify": return new MystifyScene();
+                case "matrix": return new MatrixScene();
                 case "blank": return new BlankScene();
                 default: return null;
             }
