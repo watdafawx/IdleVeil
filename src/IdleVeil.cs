@@ -261,6 +261,7 @@ namespace IdleVeil
                     if (k == "mode") Mode = v.ToLowerInvariant();
                     else if (k == "screens") Screens = ScreenModes.Name(ScreenModes.Parse(v));
                     else if (k == "renderer") ForceGdi = v.ToLowerInvariant() == "gdi";
+                    else if (k == "musicviz" || k == "musicclock") MusicConfig.Set(k, v);
                     else if (k.StartsWith("scene.") && v != "") SceneFor[line.Substring(0, eq).Trim().Substring(6)] = v.ToLowerInvariant();
                     else if (k == "idle") IdleSeconds = int.Parse(v);
                     else if (k == "hidecursor") HideCursor = v == "1" || v.ToLowerInvariant() == "true";
@@ -288,7 +289,8 @@ namespace IdleVeil
                     "mode=" + Mode, "idle=" + IdleSeconds, "hidecursor=" + (HideCursor ? "1" : "0"),
                     "ignoreinjected=" + (IgnoreInjected ? "1" : "0"), "keeponfor=" + KeepOnFor,
                     "offmonitor=" + OffMonitor, "offafter=" + OffAfterSeconds, "noveilapps=" + string.Join(",", NoVeilApps.ToArray()), "autoupdate=" + (AutoUpdate ? "1" : "0"),
-                    "debug=" + (Debug ? "1" : "0"), "screens=" + Screens, "renderer=" + (ForceGdi ? "gdi" : "gpu") };
+                    "debug=" + (Debug ? "1" : "0"), "screens=" + Screens, "renderer=" + (ForceGdi ? "gdi" : "gpu"),
+                    "musicviz=" + MusicConfig.Viz, "musicclock=" + MusicConfig.Clock };
                 foreach (var kv in SceneFor) lines.Add("scene." + kv.Key + "=" + kv.Value);
                 File.WriteAllLines(SettingsPath, lines.ToArray());
             }
@@ -543,7 +545,7 @@ namespace IdleVeil
 
             var anim = new ToolStripMenuItem("Animation");
             AddChoice(anim, "Random", opt.Mode == "random", delegate { opt.Mode = "random"; Changed(); });
-            foreach (string id in new[] { "matrix", "mystify", "starfield", "aurora", "spectrum", "fireflies", "fire", "snow", "life", "plasma", "clock" })
+            foreach (string id in new[] { "matrix", "mystify", "starfield", "aurora", "spectrum", "fireflies", "fire", "snow", "life", "plasma", "clock", "clock-led", "clock-neon", "clock-analog", "clock-music", "scope", "scopering", "radial", "tunnel", "ripples", "music" })
             {
                 string mode = id;
                 AddChoice(anim, Savers.Label(mode), opt.Mode == mode, delegate { opt.Mode = mode; Changed(); });
@@ -551,6 +553,7 @@ namespace IdleVeil
             AddChoice(anim, "Blank (black)", opt.Mode == "blank", delegate { opt.Mode = "blank"; Changed(); });
             items.Add(anim);
             items.Add(BuildScreensMenu());
+            items.Add(MusicConfig.BuildMenu(delegate { Changed(); }));
 
             var after = new ToolStripMenuItem("Start after");
             foreach (int min in new[] { 1, 2, 5, 10, 15, 30, 60 })
@@ -908,7 +911,7 @@ namespace IdleVeil
             string id;
             if (opt.SceneFor.TryGetValue(s.Key, out id) && GpuScenes.Has(id)) return id;
             if (GpuScenes.Has(mode)) return mode;
-            return GpuScenes.Ids[rng.Next(GpuScenes.Ids.Length - 1)];   // not "blank"
+            return MusicConfig.RandomGpu(rng);   // not "blank", and no music scene while it is quiet
         }
 
         void HideSaver()

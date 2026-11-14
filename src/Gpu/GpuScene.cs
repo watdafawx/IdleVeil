@@ -94,7 +94,7 @@ namespace IdleVeil
     static class GpuScenes
     {
         // Ported scenes, in tray order. Add new ids here and in Create.
-        public static readonly string[] Ids = { "starfield", "aurora", "fireflies", "spectrum", "blank" };
+        public static readonly string[] Ids = { "starfield", "aurora", "fireflies", "spectrum", "scope", "scopering", "radial", "tunnel", "ripples", "clock", "clock-led", "clock-neon", "clock-analog", "clock-music", "music", "blank" };
 
         public static IGpuScene Create(string id)
         {
@@ -104,6 +104,17 @@ namespace IdleVeil
                 case "aurora": return new AuroraScene();
                 case "fireflies": return new FirefliesScene();
                 case "spectrum": return new SpectrumScene();
+                case "scope": return new ScopeScene();
+                case "scopering": return new ScopeRingScene();
+                case "radial": return new RadialScene();
+                case "tunnel": return new TunnelScene();
+                case "ripples": return new RipplesScene();
+                case "clock": return new ClockSevenSegScene();
+                case "clock-led": return new ClockLedScene();
+                case "clock-neon": return new ClockNeonScene();
+                case "clock-analog": return new ClockAnalogScene();
+                case "clock-music": return new ClockMusicScene();
+                case "music": return new MusicScene();
                 case "blank": return new BlankScene();
                 default: return null;
             }
@@ -112,7 +123,7 @@ namespace IdleVeil
         public static bool Has(string id) { return Array.IndexOf(Ids, id) >= 0; }
 
         // Scenes that read Audio / AudioData. The loopback capture only runs while one is on screen.
-        public static readonly string[] AudioIds = { "spectrum" };
+        public static readonly string[] AudioIds = { "spectrum", "scope", "scopering", "radial", "tunnel", "ripples", "clock-music", "music" };
 
         public static bool UsesAudio(string id) { return Array.IndexOf(AudioIds, id) >= 0; }
     }
