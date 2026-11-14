@@ -10,6 +10,11 @@ covers what is specific to these scenes.
 | `radial` | Radial | 96 rounded spokes, mirrored spectrum, bass at the bottom, peak dots |
 | `tunnel` | Tunnel | Rings flying towards you, 28 spectrum-lit rails, fog at the vanishing point |
 | `ripples` | Ripples | Rings spawned by kicks and hi-hat transients on a random screen |
+| `waterfall` | Waterfall | Spectrogram flowing down the whole world, bass in the middle, about 10 s of history |
+| `ridges` | Ridges | Stacked spectrum lines receding upward (painter's order, filled so near ridges hide far ones) |
+| `skyline` | Skyline | A night city on every floor; windows lit by the band above them, towers blink on kicks |
+| `burst` | Beat burst | Spark fireworks on kicks, small sprays on hi-hats, a soft bloom every few seconds when quiet |
+| `lissajous` | Lissajous | XY scope of the wave against a delayed copy, auto gain, slowly turning, with an echo trace |
 | `clock` | Digital clock | Large 7-segment time, ghost segments, small seconds |
 | `clock-led` | LED clock | 25 x 9 amber dot matrix with a seconds bar |
 | `clock-neon` | Neon clock | Thin pink tubes, cyan colon, power-on flicker |
@@ -38,12 +43,23 @@ leaves the screen), hue turns once per 10 minutes, and brightness has a soft sho
 loud music cannot clip to white blocks. With no music, every visualizer idles on the CPU (swelling
 wave, breathing bands) so there is never a frozen frame.
 
-**Span mode.** Every scene except Ripples is `PerScreen`, so in span mode each monitor shows its own
-copy. One clock moving across a 6000 px wide layout would sit on a single monitor most of the time
-and leave the others black, and it would cross monitor bezels, which makes a time display unreadable.
-A clock per monitor reads at a glance from anywhere and still drifts independently on each. Ripples is
-`World`: its rings are meant to be continuous across screens (a ring that grows across a bezel is
-the point), and it picks a random screen weighted by area for each new ripple.
+**Span mode.** Every scene is `World`, so span is one composition over all monitors:
+
+- Spectrum is one wide spectrum along every floor (`SceneSetup.Floors`), low to high from left to
+  right, no bar in a hole. Skyline stands on the same floors.
+- Scope and Lissajous run across the screens; Scope ring, Radial, Tunnel and Lissajous are centred
+  on `SceneSetup.Focus` (the largest hole-free rect), so a hole never cuts them.
+- Waterfall and Ridges map the bands across the world; the waterfall falls through stacked screens.
+- Ripples and Beat burst pick a random screen (weighted by area) for each new ring or burst, and
+  the rings and sparks cross bezels.
+- A clock is never cut by a bezel: it sits on one screen (the clock screen, by default the largest
+  non-OLED one; Settings > Screens > Clock screen, ini `clockscreen=<EDID key>`), and a dim ambient
+  layer (drifting motes, a seconds sweep crossing the world once a minute) moves on all screens.
+  Each clock style tints the ambient layer; the music clock makes it swell with the bass.
+
+`music` follows the screen mode like any scene: in span the visualizer spans and the clock sits on
+the clock screen; in each/mirror every screen shows the same pick; in per-screen mode every monitor
+can have its own visualizer.
 
 **Music mode crossfade.** No render target. The visualizer is drawn opaque, a black layer with alpha
 `1 - e` dims it, then the clock is added on top with its own `Mix` of `1 - e`
@@ -61,10 +77,17 @@ it says something is playing. A random `clock` pick becomes a random clock style
 
 ## Settings
 
-Settings window, **Music** page: "While music plays" (Spectrum, Oscilloscope, Oscilloscope
-ring, Radial, Tunnel, Ripples) and "When it's quiet" (the five clocks), with a live meter and a
-Test button. Stored in IdleVeil.ini as
-`musicviz=<id>` and `musicclock=<id>`; unknown values are ignored.
+Settings window, **Music** page:
+
+1. "While music plays": **One visualizer** (click a live card) or **Random** (tick the cards that
+   form the pool; a new pick each time the music starts again after the clock was back).
+2. In per-screen mode, one drop-down per monitor: "Same as above", "Random from pool" or a
+   visualizer.
+3. "When it's quiet": the five clock cards.
+4. A live "music detected" meter on top, and under "Try it" a **Test** button that shows the real veil in music mode.
+
+Stored in IdleVeil.ini as `musicviz=<id>|random`, `musicpool=<id>,<id>,...`,
+`musicviz.<EDID key>=<id>|random` (per-screen) and `musicclock=<id>`; unknown values are ignored.
 
 ## Testing
 

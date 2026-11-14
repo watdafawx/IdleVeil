@@ -1,4 +1,5 @@
-// Shared base for the music visualizers (oscilloscope, ring, radial, tunnel, ripples).
+// Shared base for the music visualizers (scope, ring, radial, tunnel, ripples, waterfall, ridges,
+// skyline, burst, lissajous).
 //
 // The host hands scenes the raw AudioFrame. A visualizer wants a little more than that: a
 // waveform that holds still instead of jittering (software trigger), an echo of it, an "idle"

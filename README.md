@@ -57,9 +57,9 @@ Everything else is set in the settings window. Changes apply at once (there's no
 | Page | What's on it |
 | --- | --- |
 | **Scenes** | Live previews of every scene, grouped into Ambient, Music visualizers, Clocks and Classic (a note marks the scenes that react to sound). Click one to always show it, or pick **Random** and tick which scenes it may choose from. Music visualizers only join Random while something is playing |
-| **Screens** | A to-scale map of your monitors with their names, resolutions and a live preview of what each will show. Choose **Span** (one scene across every screen), **Each** (its own copy per screen), **Mirror** (the same picture everywhere) or **Per screen**, where clicking a monitor picks its scene. The monitor that gets turned off is marked |
+| **Screens** | A to-scale map of your monitors with their names, resolutions and a live preview of what each will show. Choose **Span** (one scene composed across every screen: the map shows the real span picture, and **Clock screen** picks where a span clock sits, by default the largest non-OLED screen), **Each** (its own copy per screen), **Mirror** (the same picture everywhere) or **Per screen**, where clicking a monitor picks its scene. The monitor that gets turned off is marked |
 | **Timing & OLED** | Idle time before it appears; which monitor to turn off (detach) and after how long, so OLEDs can run their pixel refresh; whether apps asking to keep the display on stop it (Fullscreen only, Always, Never); hide cursor; ignore input injected by other apps |
-| **Music** | Which visualizer Music mode shows while sound plays and which clock when it's quiet, with a live "music detected" meter and a **Test** button (see [docs/music-scenes.md](docs/music-scenes.md)) |
+| **Music** | Which visualizer Music mode shows while sound plays (one, or **Random** from a pool you tick; in Per screen mode each monitor can pick its own) and which clock when it's quiet, with a live "music detected" meter and a **Test** button (see [docs/music-scenes.md](docs/music-scenes.md)) |
 | **Apps** | Apps that stop the animation while they're in front. Add them from a list of running apps (the app you used last is suggested) |
 | **General** | Start with Windows, the GPU renderer (with its status, or why it fell back to GDI), automatic updates and **Check now**, the log and settings files, and About |
 
@@ -80,7 +80,8 @@ IdleVeil.exe [options]
   --mode <id>                  Animation to show (default random): random, matrix,
                                mystify, starfield, aurora, spectrum, fireflies, fire,
                                snow, life, plasma, clock, clock-led, clock-neon, clock-analog,
-                               clock-music, scope, scopering, radial, tunnel, ripples, music, blank
+                               clock-music, scope, scopering, radial, tunnel, ripples,
+                               waterfall, ridges, skyline, burst, lissajous, music, blank
   --screens <m>                Multi-monitor layout for GPU scenes: each (default),
                                span, mirror, perscreen
   --watch <file>               Treat growth of this file as activity, e.g. a log
@@ -159,7 +160,7 @@ The source is limited to C# 5, since that's what the built-in compiler supports.
 - A monitor is turned off by removing it from the display layout with `SetDisplayConfig`, never saving that layout to Windows' display database. The previous layout and window placements are restored on return. It waits until no app has injected input for a minute, so an agent clicking on that monitor isn't disturbed mid-task. If IdleVeil is killed while a monitor is off, the next start brings it back.
 - The overlay is a topmost, layered, click-through (`WS_EX_TRANSPARENT`), non-activating window.
 - Scenes with a GPU version are drawn with Direct3D 11 at native resolution, one flip-model swap chain per monitor shown through DirectComposition, vsynced at 60 fps. If the GPU path can't start, the GDI renderer takes over (the reason is logged). Multi-monitor layout: `screens=` in the ini or the Screens page of the settings window; `scene.<EDID id>=<scene>` picks a scene per monitor in `perscreen` mode. See [docs/renderer.md](docs/renderer.md).
-- GPU ambient scenes: plasma, snow, fire, Game of Life, mystify and matrix rain (`src/Gpu/Scenes/`). Span mode makes mystify polygons, life gliders and matrix columns cross every monitor; snow and fire run per monitor.
+- GPU ambient scenes: plasma, snow, fire, Game of Life, mystify and matrix rain (`src/Gpu/Scenes/`). Span mode composes every scene across all monitors: fire burns along the real bottom edges, snow falls through stacked screens and piles only on floors, matrix columns run from the top edges down through stacked screens, the spectrum is one wide row, centred scenes avoid the empty corners, and clocks sit whole on one screen with a dim ambient layer on the others. Music visualizers: scope, scope ring, radial, tunnel, ripples, waterfall, ridges, skyline, beat burst and Lissajous.
 - `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` hides it from screen capture (Windows 10 2004 or later).
 - Video playback is detected by checking whether any app has set `ES_DISPLAY_REQUIRED` while a fullscreen (not maximized) window has focus.
 - The cursor is hidden by temporarily swapping the system cursors for blank ones and restoring the user's cursor scheme afterwards (also on start-up, in case of a crash).

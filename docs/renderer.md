@@ -102,7 +102,16 @@ The `GpuScene` base class stores what you need and calls your `OnInit()`:
 
 `SceneSetup`: `World`, `Screens` (the *visible* rects inside the world), `U`, `Seed`, `Mode`, and
 `Visible(x, y, margin)`, which is true if the point lies on some screen. A positive margin grows
-the screens and a negative margin shrinks them.
+the screens and a negative margin shrinks them. For span compositions it also has:
+
+| Member | Meaning |
+|---|---|
+| `Spanning` | true when several screens share one world (span mode) |
+| `ScreenAt(x, y)` | index of the screen containing the point, or -1 (a hole) |
+| `Floors` | bottom edges with no screen directly below (`Edge`: `X0`, `X1`, `Y`, `Screen`, `CutLeft`/`CutRight`, `W`). Equal neighbours are merged, so a row of screens is one floor. Fire burns and snow piles here, Spectrum and Skyline stand here |
+| `Ceilings` | top edges with no screen directly above: where snow and matrix columns enter |
+| `Focus` | the largest hole-free rectangle. Centred compositions (radial, tunnel, scope ring, Lissajous) sit in it, so a hole never cuts them. On one screen it is the world |
+| `Keys`, `ClockScreen` | EDID key per screen, and the screen a span clock sits on (see section 4) |
 
 `FrameContext` (passed to `Update`): `Time` (seconds since this instance started), `Dt` (clamped
 to 0..0.1), `Audio` (`AudioFrame`), and `BurnX`/`BurnY` (the burn-in drift, in world units).
@@ -148,9 +157,26 @@ part of the world but not on any screen. Spawn and cull against `Setup.Screens` 
 `Setup.Visible`, not `World`. Otherwise objects pile up where nobody can see them.
 `Setup.Visible` is exact; on a single screen it is always true inside the world.
 
-**`SceneLayout.PerScreen`.** A scene with a composition per screen (a centred clock, a spectrum
-with margins) returns `SceneLayout.PerScreen`. Span mode then falls back to `each` for it, and the
-log shows `each`.
+**Every scene spans.** All built-in scenes return `SceneLayout.World`, so `screens=span` really is
+one composition over every monitor, also in Music mode. Lay things out from the geometry, not from
+the world box:
+
+- Things that stand on the ground (fire, the spectrum, a city) use `Setup.Floors`.
+- Things that fall (snow, matrix rain) enter at `Setup.Ceilings` and fall through stacked screens;
+  they are culled when they leave the last screen below.
+- Centred compositions use `Setup.Focus`, sized by its shorter side.
+- A spectrum or wave that should read across all screens maps world x to 0..1 (`WorldUV`).
+- `U` in span mode is the tallest screen's height / 1080, so sizes match the biggest screen.
+
+**Clocks in span.** A time display must never be cut by a bezel. `ClockScene` draws the clock on
+one screen only (`Stage = Setup.Screens[Setup.ClockScreen]`, with `U` reset from that screen's
+height) and a dim `ClockAmbient` layer (drifting motes and a seconds sweep crossing the world once
+a minute) on all screens. The clock screen is `clockscreen=<EDID key>` in the ini (Screens page:
+**Clock screen**), else the largest non-OLED screen (`SpanConfig.PickClockScreen`), so a static
+time never sits on the burn-in sensitive panel.
+
+**`SceneLayout.PerScreen`.** Still supported for a future scene that truly cannot compose across
+screens: span mode then falls back to `each` for it, and the log shows `each`.
 
 **In shaders:**
 
@@ -200,6 +226,7 @@ Every shader gets `Hlsl.Prelude` prepended. Slots:
 | `Burn` | the burn-in drift in world units (section 6) |
 | `Fade` | 0..1 fade-in. The host applies it; read it only if you need it |
 | `PixelWorld` | world units per screen pixel |
+| `Focus` | x, y, w, h of `SceneSetup.Focus` (the largest hole-free rect) |
 | `ViewIndex` | screen index 0..n-1 |
 
 `cbuffer AudioData : register(b1)`: `Bands4[16]` (64 bands, 0..1, low → high, smoothed),
@@ -282,6 +309,15 @@ other glyph shapes, extend `GlyphDist` in `Hlsl.Glyphs` (and `Code()` in `TextBa
   (Fire). Keep the grid small and draw the detail in the shader (for example rounded cells from
   `SampPoint` + `sdRoundBox` on `frac(uv * size)`), so it stays crisp at 1440p.
 
+### VizHistory: the spectrum over time
+
+`VizHistory(gpu, rows, rowsPerSecond)` (`src/Gpu/Scenes/VizHistory.cs`) keeps the last `rows`
+spectrum rows in a 64 x rows ring texture at `t1`, pushed at a fixed rate so the speed does not
+depend on the frame rate. Call `Update(dt, Bands, out newest, out progress)` in `OnUpdateViz`, put
+`(newest, progress, Rows)` in `EX[VizHistory.Slot]` (15), and `Bind()` before `base.Render`.
+Prepend `VizHistory.Hlsl` to the shader and read `History(t, rowsAgo)` (t = band 0..1, rowsAgo
+fractional, so the scroll is smooth between pushes). Used by Waterfall and Ridges.
+
 ### Blend modes
 
 `BlendMode.Opaque` (full-screen base), `Add` (light: glows, sparks, text) and `Alpha`
@@ -332,6 +368,8 @@ portable, so the log goes to `build\IdleVeil.log` instead of `%APPDATA%\IdleVeil
 - It writes `<scene>_<mode>_s<screen>_f<n>.png` for each screen and
   `<scene>_<mode>_layout_f<n>.png`, a half-size picture of the whole desktop with grey where
   there is no screen. Use the layout image to check span continuity across monitor seams.
+  The settings window's Screens map uses the same idea live: in Span mode it renders one span
+  thumbnail over all monitors (`ThumbRenderer.GetSpan`) and shows each monitor's part of it.
 - Timing per screen goes to `<dir>\render-test.txt`.
 - The simulation runs at a fixed 60 fps from t = 0, so results are repeatable. Audio is synthetic.
 - **Look at the PNGs yourself.** Check that they are dark overall, that the detail is crisp at
