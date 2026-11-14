@@ -37,8 +37,8 @@ float TraceDist(float2 p, bool echo, float xl, float xr, float cy, float amp)
 
 float4 PS(float4 pos : SV_Position) : SV_Target
 {
-    float2 p = PixelToWorld(pos.xy) - View.xy;
-    float vw = View.z, vh = View.w, px = PixelWorld;
+    float2 p = PixelToWorld(pos.xy) - Focus.xy;
+    float vw = Focus.z, vh = Focus.w, px = PixelWorld;
     float cy = vh * 0.5 + Burn.y * 2.5 + sin(Time * 0.05) * vh * 0.03;
     float xl = vw * 0.03 + Burn.x * 2.0, xr = vw * 0.97 + Burn.x * 2.0;
     float amp = vh * 0.27;

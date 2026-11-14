@@ -5,9 +5,8 @@ namespace IdleVeil
 {
     sealed class RadialScene : VizScene
     {
-        // Centred on the whole world, so in span mode one big composition crosses every screen.
-        public override SceneLayout Layout { get { return SceneLayout.World; } }
-
+        // Centred on Focus (the largest hole-free part of the span), so one big composition
+        // crosses the screens and no hole cuts it. On one screen Focus is the screen.
         protected override string Shader { get { return Body; } }
 
         const string Body = @"
@@ -15,8 +14,8 @@ static const int N = 96;
 
 float4 PS(float4 pos : SV_Position) : SV_Target
 {
-    float2 p = PixelToWorld(pos.xy) - World.xy;
-    float vw = World.z, vh = World.w, px = PixelWorld;
+    float2 p = PixelToWorld(pos.xy) - Focus.xy;
+    float vw = Focus.z, vh = Focus.w, px = PixelWorld;
     float2 c = float2(vw * 0.5, vh * 0.5) + Burn * 2.0;
     float2 v = p - c;
     float r = length(v);

@@ -66,7 +66,8 @@ float3 Tone(float3 c) { return 1.0 - exp(-c * 1.5); }
         protected float Play;      // 0 idle .. 1 music, eased
         protected float Bass, Beat, Energy, Phase, Hue;
 
-        public override SceneLayout Layout { get { return SceneLayout.PerScreen; } }
+        // World: visualizers compose across the screens in span mode (centred ones use Focus).
+        public override SceneLayout Layout { get { return SceneLayout.World; } }
 
         // The fragment shader body; VizHlsl.Common and the prelude are put in front of it.
         protected abstract string Shader { get; }
