@@ -64,9 +64,10 @@ scene id is in `GpuScenes.Ids`. Otherwise the log says `no GPU version of X yet,
 1. Create `src/Gpu/Scenes/<Name>Scene.cs` with a `sealed class <Name>Scene : GpuScene`.
 2. Override `OnInit` (create batches and passes, initial state), `Update` (simulate, fill
    batches) and `Render` (draw). Override `Layout` only if the scene is a per-screen composition.
-3. Register it in `src/Gpu/GpuScene.cs`: add the id to `GpuScenes.Ids` (tray order, before
-   `"blank"`) and a `case` in `GpuScenes.Create`. Use the same id as the GDI saver (`Savers.cs`)
-   so that existing settings and the tray menu pick it up.
+3. Register it in `src/Gpu/GpuScene.cs`: add the id to `GpuScenes.Ids` (before `"blank"`)
+   and a `case` in `GpuScenes.Create`. Use the same id as the GDI saver (`Savers.cs`) so that
+   existing settings pick it up. Then add it to a group in `src/Settings/SceneCatalog.cs` (that's
+   where the settings window lists it) and, if Random should pick it by default, to `DefaultPool`.
 4. If the scene reads audio, also add the id to `GpuScenes.AudioIds`. The loopback capture only
    runs while such a scene is on screen.
 5. Build, run `--render-test`, look at the PNGs, then run the live `--preview --stats` (section 8).
@@ -139,7 +140,7 @@ There are three spaces:
 | `perscreen` | 1 per screen, scene chosen per monitor | that screen | all of it |
 
 The per-monitor scene comes from `scene.<EDID id>=<scene>` in the ini file (for example
-`scene.AUS2740=starfield`), or from the tray **Screens** submenu. A detached monitor
+`scene.AUS2740=starfield`), or from the **Screens** page of the settings window. A detached monitor
 (DisplayDetach) gets no window. A display change rebuilds everything.
 
 **Span has holes.** The world is the *bounding box*, so the empty corner under a shorter monitor is

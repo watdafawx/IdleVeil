@@ -3,7 +3,7 @@
 The GPU renderer's audio-reactive scenes and clocks. Read `docs/renderer.md` first; this file only
 covers what is specific to these scenes.
 
-| Id | Tray name | What it is |
+| Id | Name in Settings | What it is |
 |---|---|---|
 | `scope` | Oscilloscope | Triggered waveform line with an echo, white-hot core and a coloured halo |
 | `scopering` | Oscilloscope ring | The waveform bent into a ring; kicks send a shock ring outward |
@@ -26,8 +26,9 @@ covers what is specific to these scenes.
   `SegClockScene` (a `TextBatch` 7-segment clock with style hooks). `clock`, `clock-neon` and
   `clock-music` are small subclasses of it; `clock-led` and `clock-analog` are their own shaders.
 - `src/Gpu/Scenes/MusicScene.cs`: the `music` crossfade.
-- `src/Gpu/MusicSupport.cs`: `MusicConfig` (tray menu, settings, labels, GDI fallback, random picks)
-  and `SoundProbe`.
+- `src/Gpu/MusicSupport.cs`: `MusicConfig` (settings, labels, GDI fallback, random picks) and
+  `SoundProbe`.
+- `src/Settings/`: the settings window's Music page and the live scene previews (`Thumbnails.cs`).
 
 ## Design choices
 
@@ -52,16 +53,17 @@ the point), and it picks a random screen weighted by area for each new ripple.
 **Random must not pick audio scenes in silence.** `SoundProbe` reads the default output device's
 peak meter (`IAudioMeterInformation`, 8 samples over about 160 ms, cached for 1.5 s). It does not open
 a capture stream, so it is safe to call at the moment the veil is about to appear. `MusicConfig.Pick`
-(Random in the tray) and `MusicConfig.RandomGpu` (per-screen mode) only add audio-reactive ids when
+(Random with the default pool; a custom pool goes through `SceneCatalog.Pick`, same rule) and `MusicConfig.RandomGpu` (per-screen mode) only add audio-reactive ids when
 it says something is playing. A random `clock` pick becomes a random clock style.
 
 **GDI fallback.** `--gdi` (or no GPU) shows the plain `DigitalClock` for any clock id and for
 `music`. Visualizers have no GDI version and show Mystify there, like Spectrum does.
 
-## Tray and settings
+## Settings
 
-Tray: **Music mode** has two groups, "While music plays" (Spectrum, Oscilloscope, Oscilloscope
-ring, Radial, Tunnel, Ripples) and "When it is quiet" (the five clocks). Stored in IdleVeil.ini as
+Settings window, **Music** page: "While music plays" (Spectrum, Oscilloscope, Oscilloscope
+ring, Radial, Tunnel, Ripples) and "When it's quiet" (the five clocks), with a live meter and a
+Test button. Stored in IdleVeil.ini as
 `musicviz=<id>` and `musicclock=<id>`; unknown values are ignored.
 
 ## Testing

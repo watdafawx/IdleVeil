@@ -14,7 +14,7 @@ IdleVeil shows a screensaver-style animation (Matrix rain, Starfield, Aurora, Fi
 - **Respects video playback.** It stays off while a fullscreen app asks Windows to keep the display on.
 - **Per-app exceptions.** Never shows while chosen apps (e.g. a game you watch AFK) are focused.
 - **Hides the mouse cursor** while the animation is showing (optional).
-- **Tray icon** for all settings: animation, idle time, pause, start with Windows.
+- **A settings window** with live previews of every scene, a to-scale map of your monitors, and every option in one place. The tray icon stays small: Show now, Pause, Settings and Exit.
 - **Updates itself** from GitHub releases, with every download checked against the release's SHA-256 checksums.
 - **Tiny and dependency-free:** a ~35 KB exe using the .NET Framework that's already part of Windows 10 and 11.
 
@@ -41,23 +41,29 @@ IdleVeil lives in the system tray (you may need to click the `^` arrow to see it
 
 | Menu item | What it does |
 | --- | --- |
-| **Show now** | Starts the animation right away (double-clicking the icon does the same) |
-| **Animation** | Random, Matrix rain, Mystify, Starfield, Aurora, Fireflies, Fire, Snow, Game of Life, Plasma, Digital clock (also LED, Neon, Analog and Music clocks), the music visualizers Spectrum, Oscilloscope, Oscilloscope ring, Radial, Tunnel and Ripples, Music (a visualizer while something plays, a clock when it is quiet), or Blank (black). Each screen gets its own copy, sized for that monitor |
-| **Music mode** | Which visualizer the Music animation shows while sound plays, and which clock it shows when it is quiet (see [docs/music-scenes.md](docs/music-scenes.md)) |
-| **Start after** | Idle time before it appears: 1 to 60 minutes |
-| **Hide cursor** | Hide the mouse pointer while the animation is showing |
-| **Ignore input from apps** | Only real mouse, keyboard and controller input counts (on by default). Turn off if you use remote-control tools that should count as you being here |
-| **Keep screen on for video** | Whether apps asking to keep the display on stop the animation: Fullscreen only (default), Always, or Never |
-| **Turn off monitor** | Pick a monitor to switch off (detach) once the animation has shown for 1 to 60 minutes. The other screens keep the animation |
-| **Don't show while using** | Apps that stop the animation while they're focused. Focus the app, then open this menu and pick **Add** |
-| **Pause for 1 hour / Pause until resumed** | Temporarily stop it from appearing |
-| **Start with Windows** | Turn launching at sign-in on or off |
-| **Install updates automatically** | Download and install new releases from GitHub (on by default). Checked shortly after start, then every 12 hours; installs only while the animation isn't showing |
-| **Check for updates** | Check now, and install if there's a newer version |
-| **About IdleVeil** | Version, and where settings and the log are stored |
+| **Show now** | Starts the animation right away |
+| **Pause** | Stop it from appearing for 30 minutes, 1 hour, 2 hours, or until you resume it |
+| **Settings...** | Opens the settings window (double-clicking the icon does the same) |
 | **Exit** | Quit IdleVeil |
 
 Move the mouse or press any key to dismiss the animation.
+
+### Settings window
+
+![The IdleVeil settings window, Scenes page](docs/settings-window.png)
+
+Everything else is set in the settings window. Changes apply at once (there's no OK button), and the tray menu always matches it. **Preview** at the bottom left shows the real animation with your current settings; move the mouse to end it. Opening Settings again, or running `IdleVeil.exe --settings`, brings the open window to the front.
+
+| Page | What's on it |
+| --- | --- |
+| **Scenes** | Live previews of every scene, grouped into Ambient, Music visualizers, Clocks and Classic (a note marks the scenes that react to sound). Click one to always show it, or pick **Random** and tick which scenes it may choose from. Music visualizers only join Random while something is playing |
+| **Screens** | A to-scale map of your monitors with their names, resolutions and a live preview of what each will show. Choose **Span** (one scene across every screen), **Each** (its own copy per screen), **Mirror** (the same picture everywhere) or **Per screen**, where clicking a monitor picks its scene. The monitor that gets turned off is marked |
+| **Timing & OLED** | Idle time before it appears; which monitor to turn off (detach) and after how long, so OLEDs can run their pixel refresh; whether apps asking to keep the display on stop it (Fullscreen only, Always, Never); hide cursor; ignore input injected by other apps |
+| **Music** | Which visualizer Music mode shows while sound plays and which clock when it's quiet, with a live "music detected" meter and a **Test** button (see [docs/music-scenes.md](docs/music-scenes.md)) |
+| **Apps** | Apps that stop the animation while they're in front. Add them from a list of running apps (the app you used last is suggested) |
+| **General** | Start with Windows, the GPU renderer (with its status, or why it fell back to GDI), automatic updates and **Check now**, the log and settings files, and About |
+
+The previews only animate while the window is open and not minimized, and only the ones you can see. They use made-up audio unless something is actually playing.
 
 ### Tip: turn off the Windows screensaver
 
@@ -65,7 +71,7 @@ IdleVeil replaces it. In **Settings > Personalization > Lock screen > Screen sav
 
 ## Command-line options
 
-Settings chosen in the tray menu are saved and take priority over these defaults.
+Settings chosen in the settings window are saved and take priority over these defaults.
 
 ```
 IdleVeil.exe [options]
@@ -86,6 +92,7 @@ IdleVeil.exe [options]
                                (with --mode, --screens, --frames <n>)
   --fake-audio                 Drive the music visualizers with synthetic audio
   --preview                    Show the animation once, then quit on input
+  --settings                   Open the settings window (in the running copy, if any)
   --ignore-display-requests    Show even while an app asks to keep the display on
   --count-injected-input       Count input injected by other apps as activity
   --off-monitor <id>           Monitor to turn off, by its EDID id (e.g. AUS2740)
@@ -131,6 +138,7 @@ Project layout:
 
 ```
 src\IdleVeil.cs       the app (tray, idle logic, window, Matrix rain and Mystify)
+src\Settings\         the settings window (owner-drawn controls, live scene previews)
 src\Savers.cs         the other screensaver scenes (GDI), ported from deckviz
 src\Gpu\              the Direct3D 11 renderer and its scenes (docs/renderer.md)
 src\Audio.cs          WASAPI loopback capture for the music visualizers
@@ -150,7 +158,7 @@ The source is limited to C# 5, since that's what the built-in compiler supports.
 - Idle time comes from Raw Input. Injected input (`SendInput`) arrives without a source device, so it's ignored; real devices always have one. With "Ignore input from apps" off, `GetLastInputInfo` is used instead, which sees both. Controllers are polled through XInput.
 - A monitor is turned off by removing it from the display layout with `SetDisplayConfig`, never saving that layout to Windows' display database. The previous layout and window placements are restored on return. It waits until no app has injected input for a minute, so an agent clicking on that monitor isn't disturbed mid-task. If IdleVeil is killed while a monitor is off, the next start brings it back.
 - The overlay is a topmost, layered, click-through (`WS_EX_TRANSPARENT`), non-activating window.
-- Scenes with a GPU version are drawn with Direct3D 11 at native resolution, one flip-model swap chain per monitor shown through DirectComposition, vsynced at 60 fps. If the GPU path can't start, the GDI renderer takes over (the reason is logged). Multi-monitor layout: `screens=` in the ini or the tray's Screens menu; `scene.<EDID id>=<scene>` picks a scene per monitor in `perscreen` mode. See [docs/renderer.md](docs/renderer.md).
+- Scenes with a GPU version are drawn with Direct3D 11 at native resolution, one flip-model swap chain per monitor shown through DirectComposition, vsynced at 60 fps. If the GPU path can't start, the GDI renderer takes over (the reason is logged). Multi-monitor layout: `screens=` in the ini or the Screens page of the settings window; `scene.<EDID id>=<scene>` picks a scene per monitor in `perscreen` mode. See [docs/renderer.md](docs/renderer.md).
 - GPU ambient scenes: plasma, snow, fire, Game of Life, mystify and matrix rain (`src/Gpu/Scenes/`). Span mode makes mystify polygons, life gliders and matrix columns cross every monitor; snow and fire run per monitor.
 - `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` hides it from screen capture (Windows 10 2004 or later).
 - Video playback is detected by checking whether any app has set `ES_DISPLAY_REQUIRED` while a fullscreen (not maximized) window has focus.
