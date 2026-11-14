@@ -71,11 +71,18 @@ IdleVeil.exe [options]
 
   --idle <seconds>             Idle time before the animation starts (default 300)
   --mode <id>                  Animation to show (default random): random, matrix,
-                               mystify, starfield, aurora, fireflies, fire, snow,
-                               life, plasma, clock, blank
+                               mystify, starfield, aurora, spectrum, fireflies, fire,
+                               snow, life, plasma, clock, blank
+  --screens <m>                Multi-monitor layout for GPU scenes: each (default),
+                               span, mirror, perscreen
   --watch <file>               Treat growth of this file as activity, e.g. a log
                                written by a remote-control server
-  --fps <n>                    Animation frame rate (default 30)
+  --fps <n>                    Frame rate (default 30 for GDI scenes, 60 for GPU)
+  --gdi                        Use the old GDI renderer even for GPU scenes
+  --stats                      Log fps and frame times every 5 s
+  --render-test <dir>          Render the GPU scenes to PNGs in <dir> and quit
+                               (with --mode, --screens, --frames <n>)
+  --fake-audio                 Drive the music visualizers with synthetic audio
   --preview                    Show the animation once, then quit on input
   --ignore-display-requests    Show even while an app asks to keep the display on
   --count-injected-input       Count input injected by other apps as activity
@@ -122,7 +129,9 @@ Project layout:
 
 ```
 src\IdleVeil.cs       the app (tray, idle logic, window, Matrix rain and Mystify)
-src\Savers.cs         the other screensaver scenes, ported from deckviz
+src\Savers.cs         the other screensaver scenes (GDI), ported from deckviz
+src\Gpu\              the Direct3D 11 renderer and its scenes (docs/renderer.md)
+src\Audio.cs          WASAPI loopback capture for the music visualizers
 src\PerMonitor.cs     runs one copy of the animation per monitor
 src\PhysicalInput.cs  real vs injected mouse/keyboard input (Raw Input)
 src\Controllers.cs    game controller activity (XInput)
@@ -139,6 +148,7 @@ The source is limited to C# 5, since that's what the built-in compiler supports.
 - Idle time comes from Raw Input. Injected input (`SendInput`) arrives without a source device, so it's ignored; real devices always have one. With "Ignore input from apps" off, `GetLastInputInfo` is used instead, which sees both. Controllers are polled through XInput.
 - A monitor is turned off by removing it from the display layout with `SetDisplayConfig`, never saving that layout to Windows' display database. The previous layout and window placements are restored on return. It waits until no app has injected input for a minute, so an agent clicking on that monitor isn't disturbed mid-task. If IdleVeil is killed while a monitor is off, the next start brings it back.
 - The overlay is a topmost, layered, click-through (`WS_EX_TRANSPARENT`), non-activating window.
+- Scenes with a GPU version are drawn with Direct3D 11 at native resolution, one flip-model swap chain per monitor shown through DirectComposition, vsynced at 60 fps. If the GPU path can't start, the GDI renderer takes over (the reason is logged). Multi-monitor layout: `screens=` in the ini or the tray's Screens menu; `scene.<EDID id>=<scene>` picks a scene per monitor in `perscreen` mode. See [docs/renderer.md](docs/renderer.md).
 - `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` hides it from screen capture (Windows 10 2004 or later).
 - Video playback is detected by checking whether any app has set `ES_DISPLAY_REQUIRED` while a fullscreen (not maximized) window has focus.
 - The cursor is hidden by temporarily swapping the system cursors for blank ones and restoring the user's cursor scheme afterwards (also on start-up, in case of a crash).
