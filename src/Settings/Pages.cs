@@ -272,13 +272,25 @@ namespace IdleVeil
             }
             map = l.Add(new MonitorMap(this, screens), UI.S(360));
             l.Gap(8);
-            l.Text(mode == ScreenMode.PerScreen ? "Click a screen to choose its scene." : "Live preview of what each screen shows. In Span mode the scene really continues from one screen to the next.", Ui.TextTertiary);
+            l.Text(mode == ScreenMode.PerScreen ? "Click a screen to choose its scene." : "Live preview of what each screen shows. In Span mode the scene really continues from one screen to the next: it stands on the real floors and keeps clear of the gaps.", Ui.TextTertiary);
 
-            if (mode == ScreenMode.Span && !Opt.ForceGdi && GpuScenes.Has(Opt.Mode) && !GpuScenes.CanSpan(Opt.Mode))
+            if (mode == ScreenMode.Span && !Opt.ForceGdi && screens.Length > 1)
             {
-                string msg = SceneCatalog.Label(Opt.Mode) + " has its own layout per screen (like the clocks, Spectrum, Scope and Music), so Span shows a copy on each screen.";
+                // Clocks never span across a bezel: the time sits whole on one screen, and the
+                // others get a quiet ambient layer. Automatic avoids OLED panels.
+                int auto = SpanConfig.AutoClockScreen(screens);
+                var values = new List<string> { "" };
+                var labels = new List<string> { "Automatic (" + screens[auto].Name + ")" };
+                string selected = "";
+                for (int i = 0; i < screens.Length; i++)
+                {
+                    values.Add(screens[i].Key);
+                    labels.Add((i + 1) + "  " + screens[i].Name + (screens[i].IsOled ? " (OLED)" : ""));
+                    if (string.Equals(screens[i].Key, SpanConfig.ClockScreen, StringComparison.OrdinalIgnoreCase)) selected = screens[i].Key;
+                }
                 l.Gap(8);
-                l.Add(new InfoBar(msg, false), InfoBar.Height(UI, msg, l.Width));
+                l.Row(Glyphs.Clock, "Clock screen", "In Span mode the clocks (and music mode's clock) show whole on this screen; the other screens get a dim ambient layer. Automatic picks the largest screen that isn't an OLED.",
+                      new DropDown(values.ToArray(), labels.ToArray(), selected, delegate(string v) { SpanConfig.ClockScreen = v; Changed(); }) { MinWidth = 220 });
             }
 
             l.Header("Layout");
@@ -351,6 +363,8 @@ namespace IdleVeil
         public readonly GpuScreen[] Screens;
         Rectangle[] rects;
         Thumb[] thumbs;
+        Thumb spanThumb;          // Span mode: one preview over all screens, as the veil composes it
+        Point spanOrigin;
         int hotIndex = -1;
         Rectangle laidOutFor;
 
@@ -365,6 +379,7 @@ namespace IdleVeil
             {
                 LayoutRects();
                 var list = new List<Thumb>();
+                if (spanThumb != null) list.Add(spanThumb);
                 foreach (Thumb t in thumbs) if (t != null) list.Add(t);
                 return list;
             }
@@ -375,6 +390,7 @@ namespace IdleVeil
             get
             {
                 if (thumbs == null) return false;
+                if (spanThumb != null && spanThumb.Fresh) return true;
                 foreach (Thumb t in thumbs) if (t != null && t.Fresh) return true;
                 return false;
             }
@@ -387,6 +403,7 @@ namespace IdleVeil
             Ui ui = page.Window.UI;
             rects = new Rectangle[Screens.Length];
             thumbs = new Thumb[Screens.Length];
+            spanThumb = null;
             if (Screens.Length == 0) return;
             Rectangle u = Screens[0].Bounds;
             foreach (GpuScreen s in Screens) u = Rectangle.Union(u, s.Bounds);
@@ -402,6 +419,28 @@ namespace IdleVeil
                 string scene = page.SceneOf(Screens[i], false);
                 if (scene != null && scene != "random" && GpuScenes.Has(scene))
                     thumbs[i] = page.Window.Thumbs.Get(scene, r.Width - ui.S(4), r.Height - ui.S(4));
+            }
+            // Span: one scene over all screens. Render it once over the inner rects (to scale, gaps
+            // included), so the map shows exactly how the scene crosses bezels and avoids holes.
+            Options o = page.Window.Host.Options;
+            if (ScreenModes.Parse(o.Screens) == ScreenMode.Span && !o.ForceGdi && GpuScenes.Has(o.Mode) && o.Mode != "blank")
+            {
+                var inner = new Rectangle[Screens.Length];
+                Rectangle all = Rectangle.Empty;
+                for (int i = 0; i < Screens.Length; i++)
+                {
+                    inner[i] = new Rectangle(rects[i].X + ui.S(2), rects[i].Y + ui.S(2), rects[i].Width - ui.S(4), rects[i].Height - ui.S(4));
+                    all = i == 0 ? inner[i] : Rectangle.Union(all, inner[i]);
+                }
+                spanOrigin = all.Location;
+                var parts = new GpuScreen[Screens.Length];
+                for (int i = 0; i < Screens.Length; i++)
+                {
+                    GpuScreen s = Screens[i];
+                    parts[i] = new GpuScreen { Bounds = new Rectangle(inner[i].X - all.X, inner[i].Y - all.Y, Math.Max(8, inner[i].Width), Math.Max(8, inner[i].Height)), Device = s.Device, Id = s.Id, Name = s.Name, Primary = s.Primary };
+                }
+                spanThumb = page.Window.Thumbs.GetSpan(o.Mode, parts);
+                for (int i = 0; i < thumbs.Length; i++) thumbs[i] = null;
             }
         }
 
@@ -419,7 +458,15 @@ namespace IdleVeil
                 ui.Fill(g, r, ui.SF(6), Color.FromArgb(12, 12, 12));
                 var inner = new Rectangle(r.X + ui.S(2), r.Y + ui.S(2), r.Width - ui.S(4), r.Height - ui.S(4));
                 string scene = page.SceneOf(s, false);
-                if (thumbs[i] != null) SceneCard.DrawThumb(g, ui, thumbs[i], inner, Color.Black);
+                if (spanThumb != null)
+                {
+                    Bitmap img = spanThumb.Image;
+                    g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                    g.PixelOffsetMode = PixelOffsetMode.Half;
+                    if (img != null) g.DrawImage(img, inner, new Rectangle(inner.X - spanOrigin.X, inner.Y - spanOrigin.Y, inner.Width, inner.Height), GraphicsUnit.Pixel);
+                    else using (var b = new SolidBrush(Color.Black)) g.FillRectangle(b, inner);
+                }
+                else if (thumbs[i] != null) SceneCard.DrawThumb(g, ui, thumbs[i], inner, Color.Black);
                 else
                 {
                     using (var b = new SolidBrush(Color.FromArgb(20, 20, 20))) g.FillRectangle(b, inner);
@@ -750,6 +797,8 @@ namespace IdleVeil
         readonly List<SceneCard> cards = new List<SceneCard>();
         LoopbackAudio audio;
 
+        static string lastViz;   // the visualizer "One" returns to after Random
+
         public override void Build(Layout l)
         {
             cards.Clear();
@@ -758,24 +807,72 @@ namespace IdleVeil
             meter = l.Add(new MusicMeter(), UI.S(84));
             l.Gap(4);
 
-            string[] vizLabels = new string[MusicConfig.Visualizers.Length];
-            for (int i = 0; i < vizLabels.Length; i++) vizLabels[i] = SceneCatalog.Label(MusicConfig.Visualizers[i]);
-            string[] clockLabels = new string[MusicConfig.Clocks.Length];
-            for (int i = 0; i < clockLabels.Length; i++) clockLabels[i] = SceneCatalog.Label(MusicConfig.Clocks[i]);
-            l.Gap(4);
-            l.Row(Glyphs.Note, "While music plays", null, new DropDown(MusicConfig.Visualizers, vizLabels, MusicConfig.Viz, delegate(string v) { MusicConfig.Viz = v; Changed(); }));
-            l.Row(Glyphs.Clock, "When it's quiet", null, new DropDown(MusicConfig.Clocks, clockLabels, MusicConfig.Clock, delegate(string v) { MusicConfig.Clock = v; Changed(); }));
+            bool random = MusicConfig.Viz == "random";
+            if (!random) lastViz = MusicConfig.Viz;
+            if (lastViz == null) lastViz = "spectrum";
+            var seg = new Segmented(new[] { "One visualizer", "Random" }, random ? 1 : 0, delegate(int i)
+            {
+                MusicConfig.Viz = i == 1 ? "random" : lastViz;
+                Changed();
+            });
+            l.Row(random ? Glyphs.Shuffle : Glyphs.Note, "While music plays",
+                  random ? "Each time the music starts, one of the visualizers ticked below takes over."
+                         : "The visualizer you click below shows while music plays.", seg);
 
             int gap = UI.S(12);
-            int cw = Math.Min((l.Width - gap) / 2, UI.S(360));
-            int tw = cw - UI.S(8), th = tw * 9 / 16;
-            var a = new SceneCard(Window.Thumbs.Get(MusicConfig.Viz, tw, th), "While music plays: " + SceneCatalog.Label(MusicConfig.Viz));
-            var b = new SceneCard(Window.Thumbs.Get(MusicConfig.Clock, tw, th), "When it's quiet: " + SceneCatalog.Label(MusicConfig.Clock));
-            l.Gap(8);
-            l.Place(a, new Rectangle(l.X, l.Y, cw, th + UI.S(48)));
-            l.Place(b, new Rectangle(l.X + cw + gap, l.Y, cw, th + UI.S(48)));
-            cards.Add(a); cards.Add(b);
-            l.Y += th + UI.S(48);
+            int cols = Math.Max(2, (l.Width + gap) / (UI.S(210) + gap));
+            int cardW = (l.Width - gap * (cols - 1)) / cols;
+            int thumbW = cardW - UI.S(8), thumbH = thumbW * 9 / 16;
+            int cardH = thumbH + UI.S(48);
+
+            l.Header("Visualizers");
+            l.Gap(4);
+            Grid(l, MusicConfig.Visualizers, cols, cardW, cardH, gap, thumbW, thumbH, delegate(SceneCard card, string id)
+            {
+                if (random)
+                {
+                    card.Checkable = true;
+                    card.Checked = MusicConfig.InPool(id);
+                    card.Dim = !card.Checked;
+                    card.OnClick = delegate { TogglePool(id); };
+                }
+                else
+                {
+                    card.Selected = MusicConfig.Viz == id;
+                    card.OnClick = delegate { MusicConfig.Viz = id; lastViz = id; Changed(); };
+                }
+            });
+
+            l.Header("When it's quiet");
+            l.Gap(4);
+            Grid(l, MusicConfig.Clocks, cols, cardW, cardH, gap, thumbW, thumbH, delegate(SceneCard card, string id)
+            {
+                card.Selected = MusicConfig.Clock == id;
+                card.OnClick = delegate { MusicConfig.Clock = id; Changed(); };
+            });
+
+            // Per-screen mode: every monitor can have its own visualizer (or its own random pick).
+            if (ScreenModes.Parse(Opt.Screens) == ScreenMode.PerScreen && !Opt.ForceGdi)
+            {
+                l.Header("Visualizer per screen");
+                GpuScreen[] screens = new GpuScreen[0];
+                try { screens = GpuScreen.Current(); } catch (Exception ex) { Program.Log("screen list failed: " + ex.Message); }
+                var values = new List<string> { "", "random" };
+                var labels = new List<string> { "Same as above", "Random from pool" };
+                foreach (string id in MusicConfig.Visualizers) { values.Add(id); labels.Add(SceneCatalog.Label(id)); }
+                for (int i = 0; i < screens.Length; i++)
+                {
+                    GpuScreen s = screens[i];
+                    string key = s.Key, cur;
+                    if (!MusicConfig.VizFor.TryGetValue(key, out cur)) cur = "";
+                    l.Row(Glyphs.Monitor, (i + 1) + "  " + s.Name, s.Bounds.Width + " × " + s.Bounds.Height + (s.Primary ? "  ·  primary" : ""),
+                          new DropDown(values.ToArray(), labels.ToArray(), cur, delegate(string v)
+                          {
+                              if (v == "") MusicConfig.VizFor.Remove(key); else MusicConfig.VizFor[key] = v;
+                              Changed();
+                          }) { MinWidth = 200 });
+                }
+            }
 
             l.Header("Try it");
             l.Row(Glyphs.Play, "Test music mode", "Shows the real veil in music mode now. Move the mouse or press a key to end it.",
@@ -785,6 +882,28 @@ namespace IdleVeil
             else
                 l.Row(Glyphs.Scenes, "Use music mode", "Make music mode the scene that shows when the PC is idle (now: " + (Opt.Mode == "random" ? "Random" : SceneCatalog.Label(Opt.Mode)) + ").",
                       new PushButton(null, "Use music mode", true, delegate { Opt.Mode = "music"; Changed(); }));
+        }
+
+        void Grid(Layout l, string[] ids, int cols, int cardW, int cardH, int gap, int thumbW, int thumbH, Action<SceneCard, string> setup)
+        {
+            for (int i = 0; i < ids.Length; i++)
+            {
+                string id = ids[i];
+                int col = i % cols;
+                if (col == 0 && i > 0) l.Y += cardH + gap;
+                var card = new SceneCard(Window.Thumbs.Get(id, thumbW, thumbH), SceneCatalog.Label(id));
+                setup(card, id);
+                l.Place(card, new Rectangle(l.X + col * (cardW + gap), l.Y, cardW, cardH));
+                cards.Add(card);
+            }
+            l.Y += cardH;
+        }
+
+        void TogglePool(string id)
+        {
+            if (MusicConfig.Pool == null) MusicConfig.Pool = new List<string>(MusicConfig.Visualizers);
+            if (!MusicConfig.Pool.Remove(id)) MusicConfig.Pool.Add(id);
+            Changed();
         }
 
         public override void Shown()

@@ -6,6 +6,9 @@
 // popup), at ~10 fps; the thread sleeps while nothing is wanted or the window is hidden/minimized,
 // and hosts that go unused for a while are freed. Thumbnails hear fake audio (SyntheticAudio) unless
 // something is actually playing, then the real loopback feed.
+//
+// Span thumbnails (the Screens page map) run one host in Span mode over the screens scaled down,
+// render every part to its own texture and stitch them into one picture, gaps left black.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -27,7 +30,12 @@ namespace IdleVeil
         bool fresh;
         Bitmap bmp;           // UI thread only
 
+        // Span thumbnails (settings monitor map): the screens, scaled into this W x H picture. One
+        // SceneHost in Span mode renders every part, so the preview shows the real span composition.
+        public readonly GpuScreen[] Parts;
+
         public Thumb(string id, int w, int h) { Id = id; W = w; H = h; }
+        public Thumb(string id, int w, int h, GpuScreen[] parts) : this(id, w, h) { Parts = parts; }
 
         // Render thread: publish a frame.
         internal byte[] BackBuffer { get { return back ?? (back = new byte[W * H * 4]); } }
@@ -105,6 +113,21 @@ namespace IdleVeil
             return t;
         }
 
+        // UI thread: a span preview of a scene over `parts` (screens already scaled to thumbnail
+        // pixels, origin at 0,0; Name/Id kept so the clock screen matches the real one).
+        public Thumb GetSpan(string id, GpuScreen[] parts)
+        {
+            Rectangle u = parts[0].Bounds;
+            var key = new System.Text.StringBuilder(id + "|span");
+            foreach (GpuScreen p in parts) { u = Rectangle.Union(u, p.Bounds); key.Append("|" + p.Key + "@" + p.Bounds.X + "," + p.Bounds.Y + "," + p.Bounds.Width + "," + p.Bounds.Height); }
+            Thumb t;
+            lock (gate)
+            {
+                if (!known.TryGetValue(key.ToString(), out t)) { t = new Thumb(id, Math.Max(16, u.Right), Math.Max(16, u.Bottom), parts); known[key.ToString()] = t; }
+            }
+            return t;
+        }
+
         // Replaces what `owner` (a page, a popup) wants rendered. Pass null or empty to stop.
         public void Want(object owner, ICollection<Thumb> list)
         {
@@ -144,7 +167,8 @@ namespace IdleVeil
         sealed class Slot
         {
             public SceneHost Host;
-            public IntPtr Tex, Rtv, Staging;
+            public IntPtr[] Tex, Rtv, Staging;
+            public Rectangle[] At;   // where each part lands in the thumbnail
             public long LastUsed;
             public bool Drawn;
         }
@@ -193,8 +217,11 @@ namespace IdleVeil
                         try
                         {
                             s.Host.Update(s.Drawn ? dt : 0f);
-                            s.Host.Render(0, s.Rtv);
-                            gpu.Ctx.CopyResource(s.Staging, s.Tex);
+                            for (int i = 0; i < s.Tex.Length; i++)
+                            {
+                                s.Host.Render(i, s.Rtv[i]);
+                                gpu.Ctx.CopyResource(s.Staging[i], s.Tex[i]);
+                            }
                             s.Drawn = true;
                             drawn.Add(new KeyValuePair<Thumb, Slot>(t, s));
                         }
@@ -205,7 +232,11 @@ namespace IdleVeil
                         }
                     }
                     // Read back after all draws, so the CPU waits for the GPU once per batch.
-                    foreach (var kv in drawn) ReadBack(gpu, kv.Value.Staging, kv.Key);
+                    foreach (var kv in drawn)
+                    {
+                        for (int i = 0; i < kv.Value.Staging.Length; i++) ReadBack(gpu, kv.Value.Staging[i], kv.Value.At[i], kv.Key);
+                        kv.Key.Publish();
+                    }
                     if (drawn.Count > 0) PostFrame();
                     if (gpu.DeviceLost) { Error = "GPU device lost"; break; }
                     FreeIdle(gpu, slots, clock.ElapsedMilliseconds, 15000);
@@ -233,10 +264,19 @@ namespace IdleVeil
             var s = new Slot();
             try
             {
-                var screen = new GpuScreen { Bounds = new Rectangle(0, 0, t.W, t.H), Device = "thumb", Id = "", Name = "thumb", Primary = true };
-                s.Tex = gpu.RenderTexture(t.W, t.H, out s.Rtv);
-                s.Staging = gpu.StagingTexture(t.W, t.H);
-                s.Host = new SceneHost(gpu, new[] { screen }, ScreenMode.Each, new[] { t.Id }, GpuScenes.UsesAudio(t.Id) ? audio.View() : null, 0.3f);
+                GpuScreen[] screens = t.Parts ?? new[] { new GpuScreen { Bounds = new Rectangle(0, 0, t.W, t.H), Device = "thumb", Id = "", Name = "thumb", Primary = true } };
+                int n = screens.Length;
+                s.Tex = new IntPtr[n]; s.Rtv = new IntPtr[n]; s.Staging = new IntPtr[n]; s.At = new Rectangle[n];
+                for (int i = 0; i < n; i++)
+                {
+                    Rectangle b = screens[i].Bounds;
+                    s.At[i] = b;
+                    s.Tex[i] = gpu.RenderTexture(b.Width, b.Height, out s.Rtv[i]);
+                    s.Staging[i] = gpu.StagingTexture(b.Width, b.Height);
+                }
+                var ids = new string[n];
+                for (int i = 0; i < n; i++) ids[i] = t.Id;
+                s.Host = new SceneHost(gpu, screens, t.Parts != null ? ScreenMode.Span : ScreenMode.Each, ids, GpuScenes.UsesAudio(t.Id) ? audio.View() : null, 0.3f);
                 return s;
             }
             catch (Exception ex)
@@ -251,7 +291,8 @@ namespace IdleVeil
         static void Free(Slot s)
         {
             if (s.Host != null) try { s.Host.Dispose(); } catch { }
-            D3D.Release(ref s.Rtv); D3D.Release(ref s.Tex); D3D.Release(ref s.Staging);
+            if (s.Tex == null) return;
+            for (int i = 0; i < s.Tex.Length; i++) { D3D.Release(ref s.Rtv[i]); D3D.Release(ref s.Tex[i]); D3D.Release(ref s.Staging[i]); }
         }
 
         void FreeIdle(Gpu gpu, Dictionary<Thumb, Slot> slots, long now, long idleMs)
@@ -264,7 +305,8 @@ namespace IdleVeil
             foreach (Thumb t in drop) { Free(slots[t]); slots.Remove(t); }
         }
 
-        static void ReadBack(Gpu gpu, IntPtr staging, Thumb t)
+        // Copies one rendered part into the thumbnail's back buffer at `at` (Publish afterwards).
+        static void ReadBack(Gpu gpu, IntPtr staging, Rectangle at, Thumb t)
         {
             D3D.MAPPED_SUBRESOURCE m;
             if (gpu.Ctx.Map(staging, 0, D3D.MAP_READ, 0, out m) < 0) return;
@@ -272,11 +314,12 @@ namespace IdleVeil
             {
                 byte[] buf = t.BackBuffer;
                 int row = t.W * 4;
-                if (m.RowPitch == row) Marshal.Copy(m.Data, buf, 0, buf.Length);
-                else for (int y = 0; y < t.H; y++) Marshal.Copy(m.Data + (int)(y * m.RowPitch), buf, y * row, row);
+                int w = Math.Min(at.Width, t.W - at.X), h = Math.Min(at.Height, t.H - at.Y);
+                if (w <= 0 || h <= 0) return;
+                if (at.X == 0 && at.Y == 0 && w == t.W && h == t.H && m.RowPitch == row) Marshal.Copy(m.Data, buf, 0, buf.Length);
+                else for (int y = 0; y < h; y++) Marshal.Copy(m.Data + (int)(y * m.RowPitch), buf, (at.Y + y) * row + at.X * 4, w * 4);
             }
             finally { gpu.Ctx.Unmap(staging, 0); }
-            t.Publish();
         }
 
         void PostFrame()
