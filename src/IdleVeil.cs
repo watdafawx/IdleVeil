@@ -10,8 +10,11 @@
 //  - it can turn one monitor off for real (e.g. an OLED, so it can run pixel cleaning) by detaching it
 //  - it hides the mouse cursor while showing, and has a tray icon for options
 //
-// Usage: IdleVeil.exe [--idle seconds] [--mode random|matrix|mystify|starfield|aurora|fireflies|fire|snow|life|plasma|clock|blank] [--watch file] [--fps n]
+// Usage: IdleVeil.exe [--idle seconds] [--mode random|matrix|mystify|starfield|aurora|spectrum|fireflies|fire|snow|life|plasma|clock|blank]
+//                     [--screens span|each|mirror|perscreen] [--watch file] [--fps n] [--gdi] [--stats]
 //                     [--preview] [--ignore-display-requests] [--exit]
+//        IdleVeil.exe --render-test <dir> [--mode id] [--screens m] [--frames n]   (PNGs of the GPU scenes, see Gpu/RenderTest.cs)
+// Drawing: Gpu/ (Direct3D 11, one window per monitor, docs/renderer.md), with the GDI SaverForm below as the fallback.
 // Build: ..\build.ps1 (uses the .NET Framework csc.exe that ships with Windows; C# 5 only).
 using System;
 using System.Collections.Generic;
@@ -222,7 +225,13 @@ namespace IdleVeil
         public int IdleSeconds = 300;
         public string Mode = "random";
         public string WatchFile;
-        public int Fps = 30;
+        public int Fps = 30;                      // GDI frame rate
+        public int GpuFps = 60;                   // GPU frame-rate cap (vsync paces below it)
+        public string Screens = "each";           // span | each | mirror | perscreen (GPU renderer only)
+        public Dictionary<string, string> SceneFor = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);   // perscreen: EDID id -> scene
+        public bool ForceGdi;                     // never use the GPU renderer
+        public string RenderTestDir;              // --render-test: write PNGs and exit
+        public int RenderTestFrames = 3;
         public bool Preview;
         public string KeepOnFor = "fullscreen";   // honour "keep the display on" requests: fullscreen | always | never
         public bool HideCursor = true;
@@ -249,6 +258,9 @@ namespace IdleVeil
                     if (eq < 0) continue;
                     string k = line.Substring(0, eq).Trim().ToLowerInvariant(), v = line.Substring(eq + 1).Trim();
                     if (k == "mode") Mode = v.ToLowerInvariant();
+                    else if (k == "screens") Screens = ScreenModes.Name(ScreenModes.Parse(v));
+                    else if (k == "renderer") ForceGdi = v.ToLowerInvariant() == "gdi";
+                    else if (k.StartsWith("scene.") && v != "") SceneFor[line.Substring(0, eq).Trim().Substring(6)] = v.ToLowerInvariant();
                     else if (k == "idle") IdleSeconds = int.Parse(v);
                     else if (k == "hidecursor") HideCursor = v == "1" || v.ToLowerInvariant() == "true";
                     else if (k == "ignoreinjected") IgnoreInjected = v == "1" || v.ToLowerInvariant() == "true";
@@ -271,11 +283,13 @@ namespace IdleVeil
         {
             try
             {
-                File.WriteAllLines(SettingsPath, new[] {
+                var lines = new List<string> {
                     "mode=" + Mode, "idle=" + IdleSeconds, "hidecursor=" + (HideCursor ? "1" : "0"),
                     "ignoreinjected=" + (IgnoreInjected ? "1" : "0"), "keeponfor=" + KeepOnFor,
                     "offmonitor=" + OffMonitor, "offafter=" + OffAfterSeconds, "noveilapps=" + string.Join(",", NoVeilApps.ToArray()), "autoupdate=" + (AutoUpdate ? "1" : "0"),
-                    "debug=" + (Debug ? "1" : "0") });
+                    "debug=" + (Debug ? "1" : "0"), "screens=" + Screens, "renderer=" + (ForceGdi ? "gdi" : "gpu") };
+                foreach (var kv in SceneFor) lines.Add("scene." + kv.Key + "=" + kv.Value);
+                File.WriteAllLines(SettingsPath, lines.ToArray());
             }
             catch (Exception ex) { Program.Log("settings save error: " + ex.Message); }
         }
@@ -290,7 +304,12 @@ namespace IdleVeil
                 if (k == "--idle") { o.IdleSeconds = int.Parse(v); i++; }
                 else if (k == "--mode") { o.Mode = v.ToLowerInvariant(); i++; }
                 else if (k == "--watch") { o.WatchFile = v; i++; }
-                else if (k == "--fps") { o.Fps = int.Parse(v); i++; }
+                else if (k == "--fps") { o.Fps = o.GpuFps = int.Parse(v); i++; }
+                else if (k == "--screens") { o.Screens = ScreenModes.Name(ScreenModes.Parse(v)); i++; }
+                else if (k == "--gdi") o.ForceGdi = true;
+                else if (k == "--capturable") GpuVeil.Capturable = true;
+                else if (k == "--render-test") { o.RenderTestDir = v; i++; }
+                else if (k == "--frames") { o.RenderTestFrames = int.Parse(v); i++; }
                 else if (k == "--preview") o.Preview = true;
                 else if (k == "--ignore-display-requests") o.KeepOnFor = "never";
                 else if (k == "--count-injected-input") o.IgnoreInjected = false;
@@ -323,10 +342,28 @@ namespace IdleVeil
             DisplayDetach.RestoreWindows();
         }
 
+        // Per-monitor DPI awareness, so screen sizes are always real pixels even if display
+        // scaling changes after start-up (e.g. a different screen while the TV is off).
+        static void SetDpiAware()
+        {
+            try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); }   // PER_MONITOR_AWARE_V2, Windows 10 1703+
+            catch (EntryPointNotFoundException) { Native.SetProcessDPIAware(); }
+        }
+
         [STAThread]
         static void Main(string[] args)
         {
+            // A killed instance (or one that crashed while showing) leaves every system cursor
+            // blank: put the user's cursors back before anything else.
+            CursorHider.Restore();
             var opt = Options.Parse(args);
+            if (opt.RenderTestDir != null)
+            {
+                SetDpiAware();
+                Environment.ExitCode = RenderTest.Run(opt.RenderTestDir, opt.Mode == "random" ? null : opt.Mode,
+                                                      Array.IndexOf(args, "--screens") >= 0 ? opt.Screens : null, opt.RenderTestFrames);
+                return;
+            }
             if (opt.Exit)
             {
                 // Ask a running instance to quit cleanly (used by the installer and uninstaller).
@@ -343,13 +380,9 @@ namespace IdleVeil
                 catch (AbandonedMutexException) { created = true; }
             }
             if (!created) return;
-            // Per-monitor DPI awareness, so screen sizes are always real pixels even if display
-            // scaling changes after start-up (e.g. a different screen while the TV is off).
-            try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); }   // PER_MONITOR_AWARE_V2, Windows 10 1703+
-            catch (EntryPointNotFoundException) { Native.SetProcessDPIAware(); }
+            SetDpiAware();
             if (!opt.Preview) { opt.LoadSettings(); DisplayDetach.RecoverAfterCrash(); Updater.Cleanup(); }
-            CursorHider.Restore();
-            Log("started v" + AppInfo.Version + ": idle=" + opt.IdleSeconds + "s mode=" + opt.Mode + " watch=" + (opt.WatchFile ?? "-")
+            Log("started v" + AppInfo.Version + ": idle=" + opt.IdleSeconds + "s mode=" + opt.Mode + " screens=" + opt.Screens + (opt.ForceGdi ? " gdi" : "") + " watch=" + (opt.WatchFile ?? "-")
                 + " displayRequiredNow=" + Native.DisplayRequired());
             try { Application.Run(new Controller(opt)); }
             catch (Exception ex) { Log("crashed: " + ex); }
@@ -363,7 +396,7 @@ namespace IdleVeil
         readonly Options opt;
         readonly System.Windows.Forms.Timer tick = new System.Windows.Forms.Timer();
         readonly Random rng = new Random();
-        SaverForm form;
+        IVeil form;
         uint inputAtShow;
         int shownAt, graceMs;
         long watchLen;
@@ -502,13 +535,14 @@ namespace IdleVeil
 
             var anim = new ToolStripMenuItem("Animation");
             AddChoice(anim, "Random", opt.Mode == "random", delegate { opt.Mode = "random"; Changed(); });
-            foreach (string id in new[] { "matrix", "mystify", "starfield", "aurora", "fireflies", "fire", "snow", "life", "plasma", "clock" })
+            foreach (string id in new[] { "matrix", "mystify", "starfield", "aurora", "spectrum", "fireflies", "fire", "snow", "life", "plasma", "clock" })
             {
                 string mode = id;
                 AddChoice(anim, Savers.Label(mode), opt.Mode == mode, delegate { opt.Mode = mode; Changed(); });
             }
             AddChoice(anim, "Blank (black)", opt.Mode == "blank", delegate { opt.Mode = "blank"; Changed(); });
             items.Add(anim);
+            items.Add(BuildScreensMenu());
 
             var after = new ToolStripMenuItem("Start after");
             foreach (int min in new[] { 1, 2, 5, 10, 15, 30, 60 })
@@ -625,6 +659,39 @@ namespace IdleVeil
             return menu;
         }
 
+        ToolStripMenuItem BuildScreensMenu()
+        {
+            var menu = new ToolStripMenuItem("Screens");
+            foreach (string name in ScreenModes.Names)
+            {
+                string n = name;
+                AddChoice(menu, ScreenModes.Label(ScreenModes.Parse(n)), opt.Screens == n, delegate { opt.Screens = n; Changed(); });
+            }
+            menu.DropDownItems.Add(new ToolStripSeparator());
+            GpuScreen[] screens = new GpuScreen[0];
+            try { screens = GpuScreen.Current(); } catch (Exception ex) { Program.Log("screen list failed: " + ex.Message); }
+            foreach (GpuScreen s in screens)
+            {
+                string key = s.Key;
+                string cur;
+                opt.SceneFor.TryGetValue(key, out cur);
+                var sub = new ToolStripMenuItem(s.Name + (s.Id != "" && s.Id != s.Name ? " (" + s.Id + ")" : "") + (s.Primary ? ", primary" : ""));
+                sub.Enabled = opt.Screens == "perscreen";
+                AddChoice(sub, "Same as Animation", cur == null, delegate { opt.SceneFor.Remove(key); Changed(); });
+                foreach (string id in GpuScenes.Ids)
+                {
+                    string scene = id;
+                    AddChoice(sub, Savers.Label(scene), cur == scene, delegate { opt.SceneFor[key] = scene; Changed(); });
+                }
+                menu.DropDownItems.Add(sub);
+            }
+            menu.DropDownItems.Add(new ToolStripSeparator());
+            var gpu = new ToolStripMenuItem("Use GPU renderer (Direct3D)", null, delegate { opt.ForceGdi = !opt.ForceGdi; Changed(); });
+            gpu.Checked = !opt.ForceGdi;
+            menu.DropDownItems.Add(gpu);
+            return menu;
+        }
+
         static void About()
         {
             MessageBox.Show(
@@ -645,7 +712,7 @@ namespace IdleVeil
         {
             opt.SaveSettings();
             UpdateTooltip();
-            Program.Log("settings: idle=" + opt.IdleSeconds + "s mode=" + opt.Mode + " hideCursor=" + opt.HideCursor
+            Program.Log("settings: idle=" + opt.IdleSeconds + "s mode=" + opt.Mode + " screens=" + opt.Screens + " renderer=" + (opt.ForceGdi ? "gdi" : "gpu") + " hideCursor=" + opt.HideCursor
                 + " noVeilApps=" + string.Join(",", opt.NoVeilApps.ToArray()) + " ignoreInjected=" + opt.IgnoreInjected + " keepOnFor=" + opt.KeepOnFor + " offMonitor=" + opt.OffMonitor + " offAfter=" + opt.OffAfterSeconds + "s");
         }
 
@@ -748,7 +815,7 @@ namespace IdleVeil
                 {
                     // The screen layout changed while showing (e.g. the TV was switched off and back on):
                     // rebuild the overlay at the new size so it covers everything again.
-                    if (SystemInformation.VirtualScreen != form.Area) RebuildSaver();
+                    if (SystemInformation.VirtualScreen != form.Area || form.Broken) RebuildSaver();
                     // Ignore input in the first moment (e.g. the Enter key that launched a preview).
                     if (now - shownAt < graceMs) { inputAtShow = lastInput; return; }
                     if (lastInput != inputAtShow || logGrew || displayRequired)
@@ -785,7 +852,7 @@ namespace IdleVeil
         void ShowSaver(int grace)
         {
             shownMode = opt.Mode == "random" ? Savers.Pick(rng) : opt.Mode;
-            form = new SaverForm(shownMode, opt.Fps);
+            form = CreateVeil(shownMode);
             form.ShowSaver();
             if (opt.HideCursor) CursorHider.Hide();
             graceMs = grace;
@@ -797,17 +864,48 @@ namespace IdleVeil
 
         void RebuildSaver()
         {
-            Program.Log("screen changed to " + SystemInformation.VirtualScreen + ", resizing overlay");
-            form.Close();
+            Program.Log((form.Broken ? "GPU overlay broke" : "screen changed to " + SystemInformation.VirtualScreen) + ", rebuilding overlay");
             form.Dispose();
-            form = new SaverForm(shownMode, opt.Fps);
+            form = CreateVeil(shownMode);
             form.ShowSaver();
+        }
+
+        // The GPU overlay when every screen's scene has a GPU version, else the GDI one.
+        IVeil CreateVeil(string mode)
+        {
+            if (!opt.ForceGdi)
+            {
+                try
+                {
+                    GpuScreen[] screens = GpuScreen.Current();
+                    ScreenMode sm = ScreenModes.Parse(opt.Screens);
+                    var ids = new string[screens.Length];
+                    for (int i = 0; i < screens.Length; i++) ids[i] = sm == ScreenMode.PerScreen ? SceneFor(screens[i], mode) : mode;
+                    string missing = Array.Find(ids, id => !GpuScenes.Has(id));
+                    if (missing != null) Program.Log("no GPU version of " + missing + " yet, using GDI");
+                    else
+                    {
+                        IVeil v = GpuVeil.TryCreate(screens, sm, ids, opt.GpuFps);
+                        if (v != null) return v;
+                    }
+                }
+                catch (Exception ex) { Program.Log("GPU overlay failed, using GDI: " + ex); }
+            }
+            return new SaverForm(mode, opt.Fps);
+        }
+
+        // perscreen: the scene chosen for this monitor, else the animation if it has a GPU version, else a random GPU scene.
+        string SceneFor(GpuScreen s, string mode)
+        {
+            string id;
+            if (opt.SceneFor.TryGetValue(s.Key, out id) && GpuScenes.Has(id)) return id;
+            if (GpuScenes.Has(mode)) return mode;
+            return GpuScenes.Ids[rng.Next(GpuScenes.Ids.Length - 1)];   // not "blank"
         }
 
         void HideSaver()
         {
             CursorHider.Restore();
-            form.Close();
             form.Dispose();
             form = null;
             detachRetryAt = 0;
@@ -828,22 +926,25 @@ namespace IdleVeil
         void Draw(IntPtr hdc);
     }
 
-    class SaverForm : Form
+    class SaverForm : Form, IVeil
     {
+        public bool Broken { get { return false; } }
+
         readonly IAnimation anim;
         readonly System.Windows.Forms.Timer frame = new System.Windows.Forms.Timer();
         // Our own GDI back buffer: WinForms' double buffer converts the whole frame between GDI+ and GDI, which is slow at 1440p.
         readonly IntPtr bufDC, bufBmp, oldBufBmp;
         readonly int w, h;
-        public readonly Rectangle Area;   // the screen area this overlay was built for
+        readonly Rectangle area;
+        public Rectangle Area { get { return area; } }   // the screen area this overlay was built for
 
         public SaverForm(string mode, int fps)
         {
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
-            Area = SystemInformation.VirtualScreen;
-            Bounds = Area;
+            area = SystemInformation.VirtualScreen;
+            Bounds = area;
             BackColor = Color.Black;
             Text = "IdleVeil";
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.Opaque, true);
@@ -859,7 +960,7 @@ namespace IdleVeil
             // Every scene is built for each monitor separately (see PerMonitor), so it is centered
             // and sized for that screen instead of stretched across the bezels.
             if (mode == "blank") anim = new Blank(Bounds.Size);
-            else anim = new PerMonitor(Area, delegate(Size s) { return Savers.Create(mode, s) ?? (IAnimation)new Mystify(s); });
+            else anim = new PerMonitor(area, delegate(Size s) { return Savers.Create(mode, s) ?? (IAnimation)new Mystify(s); });
             // Blank never changes: redraw rarely, just to stay on top.
             frame.Interval = mode == "blank" ? 500 : Math.Max(10, 1000 / Math.Max(1, fps));
             frame.Tick += delegate { RenderFrame(); };

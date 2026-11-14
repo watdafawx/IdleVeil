@@ -63,6 +63,7 @@ namespace IdleVeil
                 case "life": return "Game of Life";
                 case "plasma": return "Plasma";
                 case "clock": return "Digital clock";
+                case "spectrum": return "Spectrum (music)";
                 default: return "Random";
             }
         }
