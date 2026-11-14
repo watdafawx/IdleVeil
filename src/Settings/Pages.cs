@@ -274,6 +274,13 @@ namespace IdleVeil
             l.Gap(8);
             l.Text(mode == ScreenMode.PerScreen ? "Click a screen to choose its scene." : "Live preview of what each screen shows. In Span mode the scene really continues from one screen to the next.", Ui.TextTertiary);
 
+            if (mode == ScreenMode.Span && !Opt.ForceGdi && GpuScenes.Has(Opt.Mode) && !GpuScenes.CanSpan(Opt.Mode))
+            {
+                string msg = SceneCatalog.Label(Opt.Mode) + " has its own layout per screen (like the clocks, Spectrum, Scope and Music), so Span shows a copy on each screen.";
+                l.Gap(8);
+                l.Add(new InfoBar(msg, false), InfoBar.Height(UI, msg, l.Width));
+            }
+
             l.Header("Layout");
             l.Gap(4);
             int gap = UI.S(12);

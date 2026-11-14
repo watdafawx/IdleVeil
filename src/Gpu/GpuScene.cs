@@ -128,6 +128,14 @@ namespace IdleVeil
 
         public static bool Has(string id) { return Array.IndexOf(Ids, id) >= 0; }
 
+        // False for scenes laid out per screen (clocks, spectrum, scope, music): span shows them as each.
+        public static bool CanSpan(string id)
+        {
+            IGpuScene s = Create(id);
+            if (s == null) return false;
+            try { return s.Layout == SceneLayout.World; } finally { s.Dispose(); }
+        }
+
         // Scenes that read Audio / AudioData. The loopback capture only runs while one is on screen.
         public static readonly string[] AudioIds = { "spectrum", "scope", "scopering", "radial", "tunnel", "ripples", "clock-music", "music" };
 
