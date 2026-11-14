@@ -2,7 +2,7 @@
 
 Burn-in protection for OLED screens that stays out of your way.
 
-IdleVeil shows a screensaver-style animation (Matrix rain, Mystify or plain black) when your PC has been idle for a while, and can turn an OLED monitor off for real. Unlike the built-in Windows screensaver, it **doesn't switch to a separate desktop**, so anything running in the background keeps working: remote-control tools, game streaming (Sunshine, Parsec, Moonlight), automation, and AI agents that drive the desktop.
+IdleVeil shows a screensaver-style animation (Matrix rain, Starfield, Aurora, Fire, Snow, Game of Life, Plasma and more, or plain black) when your PC has been idle for a while, and can turn an OLED monitor off for real. Unlike the built-in Windows screensaver, it **doesn't switch to a separate desktop**, so anything running in the background keeps working: remote-control tools, game streaming (Sunshine, Parsec, Moonlight), automation, and AI agents that drive the desktop.
 
 ## Features
 
@@ -42,7 +42,7 @@ IdleVeil lives in the system tray (you may need to click the `^` arrow to see it
 | Menu item | What it does |
 | --- | --- |
 | **Show now** | Starts the animation right away (double-clicking the icon does the same) |
-| **Animation** | Random, Matrix rain, Mystify, or Blank (black) |
+| **Animation** | Random, Matrix rain, Mystify, Starfield, Aurora, Fireflies, Fire, Snow, Game of Life, Plasma, Digital clock, or Blank (black). Each screen gets its own copy, sized for that monitor |
 | **Start after** | Idle time before it appears: 1 to 60 minutes |
 | **Hide cursor** | Hide the mouse pointer while the animation is showing |
 | **Ignore input from apps** | Only real mouse, keyboard and controller input counts (on by default). Turn off if you use remote-control tools that should count as you being here |
@@ -70,7 +70,9 @@ Settings chosen in the tray menu are saved and take priority over these defaults
 IdleVeil.exe [options]
 
   --idle <seconds>             Idle time before the animation starts (default 300)
-  --mode random|matrix|mystify Animation to show (default random)
+  --mode <id>                  Animation to show (default random): random, matrix,
+                               mystify, starfield, aurora, fireflies, fire, snow,
+                               life, plasma, clock, blank
   --watch <file>               Treat growth of this file as activity, e.g. a log
                                written by a remote-control server
   --fps <n>                    Animation frame rate (default 30)
@@ -119,7 +121,9 @@ Output goes to `dist\`:
 Project layout:
 
 ```
-src\IdleVeil.cs       the app (tray, idle logic, animations)
+src\IdleVeil.cs       the app (tray, idle logic, window, Matrix rain and Mystify)
+src\Savers.cs         the other screensaver scenes, ported from deckviz
+src\PerMonitor.cs     runs one copy of the animation per monitor
 src\PhysicalInput.cs  real vs injected mouse/keyboard input (Raw Input)
 src\Controllers.cs    game controller activity (XInput)
 src\DisplayDetach.cs  turning a monitor off and back on, restoring windows

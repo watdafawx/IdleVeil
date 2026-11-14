@@ -10,7 +10,7 @@
 //  - it can turn one monitor off for real (e.g. an OLED, so it can run pixel cleaning) by detaching it
 //  - it hides the mouse cursor while showing, and has a tray icon for options
 //
-// Usage: IdleVeil.exe [--idle seconds] [--mode random|matrix|mystify] [--watch file] [--fps n]
+// Usage: IdleVeil.exe [--idle seconds] [--mode random|matrix|mystify|starfield|aurora|fireflies|fire|snow|life|plasma|clock|blank] [--watch file] [--fps n]
 //                     [--preview] [--ignore-display-requests] [--exit]
 // Build: ..\build.ps1 (uses the .NET Framework csc.exe that ships with Windows; C# 5 only).
 using System;
@@ -51,6 +51,32 @@ namespace IdleVeil
         [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
         [DllImport("gdi32.dll")] public static extern bool Polyline(IntPtr hdc, POINT[] pts, int count);
+
+        // Scaled blits from a small off-screen canvas (see Savers.cs), and a DIB section so a
+        // scene can write its pixels as plain ints.
+        [StructLayout(LayoutKind.Sequential)]
+        public struct BITMAPINFOHEADER
+        {
+            public int biSize, biWidth, biHeight;
+            public short biPlanes, biBitCount;
+            public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        public struct BITMAPINFO { public BITMAPINFOHEADER bmiHeader; public int bmiColors; }
+
+        [DllImport("gdi32.dll")] public static extern IntPtr CreateDIBSection(IntPtr hdc, ref BITMAPINFO pbmi, uint usage, out IntPtr bits, IntPtr section, uint offset);
+        [DllImport("gdi32.dll")] public static extern int SetStretchBltMode(IntPtr hdc, int mode);
+        [DllImport("gdi32.dll")] public static extern bool StretchBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, int sw, int sh, uint rop);
+
+        [DllImport("gdi32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr CreateFont(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeout, uint charset, uint outPrecision, uint clipPrecision, uint quality, uint pitchAndFamily, string face);
+        [DllImport("gdi32.dll", CharSet = CharSet.Unicode)] public static extern bool TextOutW(IntPtr hdc, int x, int y, string s, int count);
+        [DllImport("gdi32.dll")] public static extern uint SetTextColor(IntPtr hdc, uint color);
+        [DllImport("gdi32.dll")] public static extern int SetBkMode(IntPtr hdc, int mode);
+        [DllImport("gdi32.dll")] public static extern bool SetTextAlign(IntPtr hdc, uint align);
+        [StructLayout(LayoutKind.Sequential)] public struct SIZE { public int CX, CY; }
+        [DllImport("gdi32.dll", CharSet = CharSet.Unicode)] public static extern bool GetTextExtentPoint32W(IntPtr hdc, string s, int count, out SIZE size);
+
+        public const int COLORONCOLOR = 3;
 
         [DllImport("user32.dll")] public static extern IntPtr CreateCursor(IntPtr inst, int hotX, int hotY, int w, int h, byte[] andMask, byte[] xorMask);
         [DllImport("user32.dll")] public static extern bool SetSystemCursor(IntPtr cursor, uint id);
@@ -476,8 +502,11 @@ namespace IdleVeil
 
             var anim = new ToolStripMenuItem("Animation");
             AddChoice(anim, "Random", opt.Mode == "random", delegate { opt.Mode = "random"; Changed(); });
-            AddChoice(anim, "Matrix rain", opt.Mode == "matrix", delegate { opt.Mode = "matrix"; Changed(); });
-            AddChoice(anim, "Mystify", opt.Mode == "mystify", delegate { opt.Mode = "mystify"; Changed(); });
+            foreach (string id in new[] { "matrix", "mystify", "starfield", "aurora", "fireflies", "fire", "snow", "life", "plasma", "clock" })
+            {
+                string mode = id;
+                AddChoice(anim, Savers.Label(mode), opt.Mode == mode, delegate { opt.Mode = mode; Changed(); });
+            }
             AddChoice(anim, "Blank (black)", opt.Mode == "blank", delegate { opt.Mode = "blank"; Changed(); });
             items.Add(anim);
 
@@ -635,7 +664,7 @@ namespace IdleVeil
         void UpdateTooltip()
         {
             if (tray == null) return;
-            string mode = opt.Mode == "matrix" ? "Matrix rain" : opt.Mode == "mystify" ? "Mystify" : "Random";
+            string mode = opt.Mode == "random" ? "Random" : Savers.Label(opt.Mode);
             tray.Text = paused ? "IdleVeil (paused)" : "IdleVeil: " + mode + " after " + (opt.IdleSeconds / 60) + " min";
         }
 
@@ -755,7 +784,7 @@ namespace IdleVeil
 
         void ShowSaver(int grace)
         {
-            shownMode = opt.Mode == "random" ? (rng.Next(2) == 0 ? "matrix" : "mystify") : opt.Mode;
+            shownMode = opt.Mode == "random" ? Savers.Pick(rng) : opt.Mode;
             form = new SaverForm(shownMode, opt.Fps);
             form.ShowSaver();
             if (opt.HideCursor) CursorHider.Hide();
@@ -827,9 +856,10 @@ namespace IdleVeil
             oldBufBmp = Native.SelectObject(bufDC, bufBmp);
             Native.PatBlt(bufDC, 0, 0, w, h, Native.BLACKNESS);
 
-            anim = mode == "matrix" ? (IAnimation)new MatrixRain(Bounds.Size)
-                 : mode == "blank" ? (IAnimation)new Blank(Bounds.Size)
-                 : new Mystify(Bounds.Size);
+            // Every scene is built for each monitor separately (see PerMonitor), so it is centered
+            // and sized for that screen instead of stretched across the bezels.
+            if (mode == "blank") anim = new Blank(Bounds.Size);
+            else anim = new PerMonitor(Area, delegate(Size s) { return Savers.Create(mode, s) ?? (IAnimation)new Mystify(s); });
             // Blank never changes: redraw rarely, just to stay on top.
             frame.Interval = mode == "blank" ? 500 : Math.Max(10, 1000 / Math.Max(1, fps));
             frame.Tick += delegate { RenderFrame(); };
