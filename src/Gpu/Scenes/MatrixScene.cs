@@ -6,8 +6,9 @@
 // one instance (position, glyph, colour) per visible glyph and a single instanced draw puts them
 // on screen; a few soft sprites add the glow of the heads.
 //
-// Columns are created per monitor, so in span mode the rain covers every screen (each monitor
-// keeps its own height; there is nothing in the holes of an uneven layout). Glyphs fall smoothly
+// Columns start at the ceilings (top edges with no screen above) and run down through every screen
+// below them, so in span mode the rain falls on from a top screen into the one under it, and
+// nothing falls into the holes of an uneven layout. Glyphs fall smoothly
 // (a continuous scroll snapped to whole pixels, which keeps them sharp). Burn-in: everything is
 // moving, columns are mostly dim (the average picture level is low) and each column has its own
 // speed, length and brightness.
@@ -25,7 +26,9 @@ namespace IdleVeil
         // One column of falling glyphs. Glyph k of the stream sits k cells above the head.
         struct Column
         {
-            public int Screen, Slot;          // which screen, first index into the glyph ring buffers
+            public int Slot;                  // first index into the glyph ring buffers
+            public float Top, Bottom;         // where the column is visible: from a ceiling down through the screens below it
+            public float RefH;                // height of the screen it starts on (sets the trail lengths)
             public float X;                   // left edge (whole pixels)
             public float Head;                // y of the head cell's top (world units), continuous
             public float Speed;               // world units per second
@@ -90,19 +93,30 @@ float4 PSMatrix(VOut i) : SV_Target
             cell = (int)Math.Round(Math.Max(14f, 19.5f * U));
             BuildAtlas();
 
+            // Columns start at the ceilings (top edges with nothing above) and run down through every
+            // screen below without a gap, so in span mode the rain falls on through stacked screens.
             RectF[] sc = Setup.Screens;
             int total = 0;
             int maxRows = 0;
             foreach (RectF r in sc) maxRows = Math.Max(maxRows, (int)Math.Ceiling(r.H / cell) + 2);
             ringSize = maxRows + 2;
             var list = new System.Collections.Generic.List<Column>();
-            for (int s = 0; s < sc.Length; s++)
+            foreach (Edge e in Setup.Ceilings)
             {
-                int n = Math.Max(1, (int)(sc[s].W / cell));
-                float left = (float)Math.Floor(sc[s].X + (sc[s].W - n * cell) * 0.5f);
+                int n = Math.Max(1, (int)(e.W / cell));
+                float left = (float)Math.Floor(e.X0 + (e.W - n * cell) * 0.5f);
                 for (int c = 0; c < n; c++)
                 {
-                    var col = new Column { Screen = s, Slot = total * ringSize, X = left + c * cell };
+                    float x = left + c * cell;
+                    float bottom = e.Y;
+                    for (int guard = 0; guard < 16; guard++)
+                    {
+                        int s = Setup.ScreenAt(x + cell * 0.5f, bottom + 0.5f);
+                        if (s < 0) break;
+                        bottom = sc[s].Bottom;
+                    }
+                    if (bottom <= e.Y) continue;
+                    var col = new Column { Slot = total * ringSize, X = x, Top = e.Y, Bottom = bottom, RefH = sc[e.Screen].H };
                     Reset(ref col, true);
                     list.Add(col);
                     total++;
@@ -124,14 +138,14 @@ float4 PSMatrix(VOut i) : SV_Target
 
         void Reset(ref Column c, bool initial)
         {
-            RectF s = Setup.Screens[c.Screen];
-            int rows = (int)Math.Ceiling(s.H / cell);
+            RectF s = new RectF(c.X, c.Top, cell, c.Bottom - c.Top);
+            int rows = (int)Math.Ceiling(c.RefH / cell);
             float b = 0.40f + 0.60f * Rng.Next();
             c.Bright = b;
             c.Length = Rng.Int(Math.Max(1, rows * 2 / 3 - 8)) + 8;
             // Brighter columns are "closer": they fall faster.
             c.Speed = (7f + 15f * b + 6f * Rng.Next()) * cell;
-            c.Head = initial ? s.Y + (Rng.Next() * 1.4f - 0.3f) * s.H : s.Y - Rng.Next() * s.H * 0.5f - cell;
+            c.Head = initial ? s.Y + (Rng.Next() * 1.4f - 0.3f) * s.H : s.Y - Rng.Next() * c.RefH * 0.5f - cell;
             c.HeadIndex = 0;
         }
 
@@ -205,7 +219,7 @@ float4 PSMatrix(VOut i) : SV_Target
             for (int ci = 0; ci < cols.Length; ci++)
             {
                 Column c = cols[ci];
-                RectF s = Setup.Screens[c.Screen];
+                RectF s = new RectF(c.X, c.Top, cell, c.Bottom - c.Top);
                 float prev = c.Head;
                 c.Head += c.Speed * dt;
                 // Each time the head moves down by a cell, a new glyph enters at the head.
