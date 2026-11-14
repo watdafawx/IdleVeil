@@ -19,10 +19,13 @@ New-Item -ItemType Directory -Force $obj, $dist | Out-Null
 
 # ---- shared version info ----
 $versionCs = Join-Path $obj 'Version.cs'
+# AssemblyVersion/FileVersion only take numbers, so a dev version like 1.2.0-dev gets 1.2.0.0 there
+# and keeps the full string for the product version.
+$numeric = ($Version -split '-')[0]
 @"
 using System.Reflection;
-[assembly: AssemblyVersion("$Version.0")]
-[assembly: AssemblyFileVersion("$Version.0")]
+[assembly: AssemblyVersion("$numeric.0")]
+[assembly: AssemblyFileVersion("$numeric.0")]
 [assembly: AssemblyInformationalVersion("$Version")]
 [assembly: AssemblyProduct("IdleVeil")]
 [assembly: AssemblyTitle("IdleVeil")]
