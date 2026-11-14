@@ -109,5 +109,10 @@ namespace IdleVeil
         }
 
         public static bool Has(string id) { return Array.IndexOf(Ids, id) >= 0; }
+
+        // Scenes that read Audio / AudioData. The loopback capture only runs while one is on screen.
+        public static readonly string[] AudioIds = { "spectrum" };
+
+        public static bool UsesAudio(string id) { return Array.IndexOf(AudioIds, id) >= 0; }
     }
 }

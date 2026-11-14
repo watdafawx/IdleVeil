@@ -236,7 +236,7 @@ namespace IdleVeil
             Marshal.ReleaseComObject(factory);
             D3D.Check(dcomp.Commit(), "DComp Commit");
 
-            host = new SceneHost(gpu, screens, mode, sceneIds, AudioInput.Open());
+            host = new SceneHost(gpu, screens, mode, sceneIds, AudioInput.Open(sceneIds));
             timer = CreateWaitableTimerExW(IntPtr.Zero, null, 0x2 /* HIGH_RESOLUTION */, 0x1F0003);
             if (timer == IntPtr.Zero) timer = CreateWaitableTimerExW(IntPtr.Zero, null, 0, 0x1F0003);
 

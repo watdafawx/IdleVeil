@@ -2,8 +2,8 @@
 // IAudioSource per frame into an AudioFrame (smoothed bands, falling peaks, waveform, bass, beat)
 // and hands it to every scene, on the CPU (FrameContext.Audio) and on the GPU (cbuffer AudioData).
 //
-// Wiring real audio: the WASAPI loopback capture (AudioFeed, branch feat/music-vis) plugs in at
-// AudioInput.Open(). Until then a synthetic source keeps the visualizers moving.
+// Real audio comes from the WASAPI loopback capture (AudioFeed in Audio.cs), opened only when a
+// scene on screen listens (GpuScenes.UsesAudio). --fake-audio swaps in SyntheticAudio for testing.
 using System;
 
 namespace IdleVeil
@@ -17,8 +17,40 @@ namespace IdleVeil
 
     static class AudioInput
     {
-        // The one line to change when the real capture lands: return a source wrapping AudioFeed.
-        public static IAudioSource Open() { return new SyntheticAudio(); }
+        // --fake-audio: drive the visualizers with SyntheticAudio instead of the loopback capture.
+        public static bool Synthetic;
+
+        // The source for a set of scenes: null when none of them listens (no capture thread runs),
+        // otherwise the shared WASAPI loopback feed (or the synthetic one for testing).
+        public static IAudioSource Open(string[] sceneIds)
+        {
+            bool needed = false;
+            foreach (string id in sceneIds) if (GpuScenes.UsesAudio(id)) needed = true;
+            if (!needed) return null;
+            if (Synthetic) return new SyntheticAudio();
+            return new LoopbackAudio();
+        }
+    }
+
+    // AudioFeed (Audio.cs) behind IAudioSource. The feed is ref-counted: Dispose releases our share.
+    sealed class LoopbackAudio : IAudioSource
+    {
+        AudioFeed feed = AudioFeed.Acquire();
+
+        public bool Read(float[] bands, float[] wave)
+        {
+            if (feed == null) return false;
+            feed.Update();
+            AudioSnapshot s = feed.Current;
+            Array.Copy(s.Bands, bands, Math.Min(bands.Length, s.Bands.Length));
+            Array.Copy(s.Wave, wave, Math.Min(wave.Length, s.Wave.Length));
+            return s.Playing;
+        }
+
+        public void Dispose()
+        {
+            if (feed != null) { feed.Release(); feed = null; }
+        }
     }
 
     // What scenes see. Bands rise fast and fall slowly; peaks hold for a moment, then drop.

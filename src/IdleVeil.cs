@@ -318,6 +318,7 @@ namespace IdleVeil
                 else if (k == "--off-after") { o.OffAfterSeconds = int.Parse(v); i++; }
                 else if (k == "--stats") SaverForm.Stats = true;
                 else if (k == "--audio-test") o.AudioTest = true;
+                else if (k == "--fake-audio") AudioInput.Synthetic = true;
                 else if (k == "--exit") o.Exit = true;
                 else if (k == "--after-update") o.AfterUpdate = true;
             }
