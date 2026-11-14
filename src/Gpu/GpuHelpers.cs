@@ -27,6 +27,7 @@ cbuffer Frame : register(b0)
     float  PixelWorld;  // world units per screen pixel (1, or more when mirrored onto a smaller screen)
     float  ViewIndex;   // which screen this view is, 0..n-1
     float3 FramePad;
+    float4 Focus;       // x, y, w, h of the largest hole-free rectangle (span) or the world: centre compositions here
 };
 
 cbuffer AudioData : register(b1)

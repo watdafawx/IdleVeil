@@ -57,6 +57,26 @@ namespace IdleVeil
 
         public string Key { get { return Id != "" ? Id : Device.TrimStart('\\', '.'); } }
 
+        // OLED panels known by name (EDID friendly names), plus anything that says OLED. Used to keep
+        // the span clock off burn-in sensitive screens. A guess: the user can pick the screen.
+        static readonly string[] OledModels =
+        {
+            "PG27AQDP", "PG27AQDM", "PG32UCDM", "PG32UCDP", "PG34WCDM", "PG27UCDM", "PG39WCDM", "PG42UQ", "PG48UQ", "XG27AQDMG", "XG27ACDNG", "XG32UCWMG",
+            "AW3423", "AW2725DF", "AW3225QF", "AW2725Q", "AW3425DW", "27GR95QE", "27GS95QE", "32GS95UE", "45GR95QE", "39GS95QE", "45GS95QE",
+            "MPG 321URX", "MPG 271QRX", "MAG 271QPX", "MPG 491CQP", "MAG 321UP", "G60SD", "G80SD", "G85SB", "G93SC", "G95SC", "Odyssey OLED",
+            "FO27Q", "FO32U", "FO48U", "MO27Q", "Q27G4ZD", "AG276QZD", "AG326UD", "PD32M", "PD3225U", "OLED",
+        };
+
+        public bool IsOled
+        {
+            get
+            {
+                string n = (Name ?? "").ToUpperInvariant();
+                foreach (string m in OledModels) if (n.Contains(m.ToUpperInvariant())) return true;
+                return false;
+            }
+        }
+
         public static GpuScreen[] Current()
         {
             Dictionary<string, MonitorInfo> ids = DisplayDetach.ByGdiName();
@@ -73,6 +93,46 @@ namespace IdleVeil
                 };
             }
             return list;
+        }
+    }
+
+    // Span-mode settings (ini: clockscreen=<EDID key>; empty = automatic).
+    static class SpanConfig
+    {
+        public static string ClockScreen = "";
+
+        public static void Set(string key, string value)
+        {
+            if (key == "clockscreen") ClockScreen = (value ?? "").Trim();
+        }
+
+        // The screen a span clock sits on: the chosen one, else the largest screen that is not an
+        // OLED (top-most, then left-most, on a tie), else the largest one.
+        public static int PickClockScreen(GpuScreen[] screens)
+        {
+            for (int i = 0; i < screens.Length; i++)
+                if (ClockScreen != "" && string.Equals(screens[i].Key, ClockScreen, StringComparison.OrdinalIgnoreCase)) return i;
+            return AutoClockScreen(screens);
+        }
+
+        public static int AutoClockScreen(GpuScreen[] screens)
+        {
+            int best = -1;
+            for (int pass = 0; pass < 2 && best < 0; pass++)
+                for (int i = 0; i < screens.Length; i++)
+                {
+                    if (pass == 0 && screens[i].IsOled) continue;
+                    if (best < 0 || Better(screens[i].Bounds, screens[best].Bounds)) best = i;
+                }
+            return Math.Max(0, best);
+        }
+
+        static bool Better(Rectangle a, Rectangle b)
+        {
+            long aa = (long)a.Width * a.Height, ab = (long)b.Width * b.Height;
+            if (aa != ab) return aa > ab;
+            if (a.Y != b.Y) return a.Y < b.Y;
+            return a.X < b.X;
         }
     }
 
@@ -118,6 +178,7 @@ namespace IdleVeil
             this.gpu = gpu;
             this.minWorldU = minWorldU;
             this.audioSource = audioSource;
+            MusicConfig.Session = (uint)seeds.Next(1, int.MaxValue);
             targets = new Target[screens.Length];
             fade = new FullscreenPass(gpu, "float4 PS(float4 pos : SV_Position) : SV_Target { return float4(0, 0, 0, 1.0 - Fade); }");
 
@@ -142,7 +203,9 @@ namespace IdleVeil
                     maxH = Math.Max(maxH, screens[i].Bounds.Height);
                     rects[i] = ToRect(screens[i].Bounds);
                 }
-                Instance inst = Make(sceneIds[0], ToRect(u), rects, maxH / 1080f, mode);
+                var keys = new string[screens.Length];
+                for (int i = 0; i < screens.Length; i++) keys[i] = screens[i].Key;
+                Instance inst = Make(sceneIds[0], ToRect(u), rects, maxH / 1080f, mode, keys, SpanConfig.PickClockScreen(screens));
                 for (int i = 0; i < screens.Length; i++)
                     targets[i] = new Target { Inst = inst, View = new RenderView { View = rects[i], Viewport = Pixels(screens[i].Bounds.Size), Index = i } };
             }
@@ -155,7 +218,7 @@ namespace IdleVeil
                     if (a > b || (a == b && s.Primary)) refScreen = s;
                 }
                 var world = new RectF(0, 0, refScreen.Bounds.Width, refScreen.Bounds.Height);
-                Instance inst = Make(sceneIds[0], world, new[] { world }, world.H / 1080f, mode);
+                Instance inst = Make(sceneIds[0], world, new[] { world }, world.H / 1080f, mode, new[] { refScreen.Key }, 0);
                 for (int i = 0; i < screens.Length; i++)
                 {
                     Size sz = screens[i].Bounds.Size;
@@ -171,7 +234,7 @@ namespace IdleVeil
                 {
                     Size sz = screens[i].Bounds.Size;
                     var world = new RectF(0, 0, sz.Width, sz.Height);
-                    Instance inst = Make(sceneIds[i], world, new[] { world }, sz.Height / 1080f, mode);
+                    Instance inst = Make(sceneIds[i], world, new[] { world }, sz.Height / 1080f, mode, new[] { screens[i].Key }, 0);
                     targets[i] = new Target { Inst = inst, View = new RenderView { View = world, Viewport = Pixels(sz), Index = i } };
                 }
             }
@@ -180,13 +243,16 @@ namespace IdleVeil
         static RectF ToRect(Rectangle r) { return new RectF(r.X, r.Y, r.Width, r.Height); }
         static RectF Pixels(Size s) { return new RectF(0, 0, s.Width, s.Height); }
 
-        Instance Make(string id, RectF world, RectF[] visible, float u, ScreenMode mode)
+        Instance Make(string id, RectF world, RectF[] visible, float u, ScreenMode mode, string[] keys, int clockScreen)
         {
             var inst = new Instance { Id = id, Scene = GpuScenes.Create(id) ?? new BlankScene() };
-            if (inst.Scene.Layout == SceneLayout.World) u = Math.Max(u, minWorldU);
+            // Clocks (and music mode, which holds one) are sized for a whole screen: no close-up.
+            if (inst.Scene.Layout == SceneLayout.World && !(inst.Scene is ClockScene) && !(inst.Scene is MusicScene)) u = Math.Max(u, minWorldU);
             uint seed = (uint)seeds.Next(1, int.MaxValue);
-            inst.Scene.Init(gpu, new SceneSetup { World = world, Screens = visible, U = u, Seed = seed, Mode = mode });
+            var setup = new SceneSetup { World = world, Screens = visible, U = u, Seed = seed, Mode = mode, Keys = keys, ClockScreen = clockScreen };
+            inst.Scene.Init(gpu, setup);
             inst.Frame.World = world;
+            inst.Frame.Focus = setup.Focus;
             inst.Frame.U = u;
             inst.Frame.Seed = (seed & 0xffff) / 65536f;
             inst.BurnPhase = (float)seeds.NextDouble() * 100f;

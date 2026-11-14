@@ -339,10 +339,11 @@ namespace IdleVeil
     // The Frame constant buffer (register b0). Layout must match Hlsl.Prelude.
     sealed class FrameConstants
     {
-        public const int Floats = 28;
+        public const int Floats = 32;
         public readonly float[] Data = new float[Floats];
         public float Time, Dt, U, Seed;
         public RectF World;
+        public RectF Focus;          // SceneSetup.Focus
         public float Fade = 1f;
         public float BurnX, BurnY;   // slow burn-in drift (world units)
 
@@ -356,6 +357,7 @@ namespace IdleVeil
             // 16..19 audio scalars, filled by SceneHost through SetAudio
             d[20] = BurnX; d[21] = BurnY; d[22] = Fade; d[23] = v.View.W / Math.Max(1f, v.Viewport.W);
             d[24] = v.Index; d[25] = 0; d[26] = 0; d[27] = 0;
+            d[28] = Focus.X; d[29] = Focus.Y; d[30] = Focus.W; d[31] = Focus.H;
         }
 
         public void SetAudio(AudioFrame a)

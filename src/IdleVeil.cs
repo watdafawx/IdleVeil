@@ -265,7 +265,8 @@ namespace IdleVeil
                     if (k == "mode") Mode = v.ToLowerInvariant();
                     else if (k == "screens") Screens = ScreenModes.Name(ScreenModes.Parse(v));
                     else if (k == "renderer") ForceGdi = v.ToLowerInvariant() == "gdi";
-                    else if (k == "musicviz" || k == "musicclock") MusicConfig.Set(k, v);
+                    else if (k == "musicviz" || k == "musicclock" || k == "musicpool" || k.StartsWith("musicviz.")) MusicConfig.Set(line.Substring(0, eq).Trim(), v);
+                    else if (k == "clockscreen") SpanConfig.Set(k, v);
                     else if (k.StartsWith("scene.") && v != "") SceneFor[line.Substring(0, eq).Trim().Substring(6)] = v.ToLowerInvariant();
                     else if (k == "idle") IdleSeconds = int.Parse(v);
                     else if (k == "hidecursor") HideCursor = v == "1" || v.ToLowerInvariant() == "true";
@@ -295,7 +296,8 @@ namespace IdleVeil
                     "ignoreinjected=" + (IgnoreInjected ? "1" : "0"), "keeponfor=" + KeepOnFor,
                     "offmonitor=" + OffMonitor, "offafter=" + OffAfterSeconds, "noveilapps=" + string.Join(",", NoVeilApps.ToArray()), "autoupdate=" + (AutoUpdate ? "1" : "0"),
                     "debug=" + (Debug ? "1" : "0"), "screens=" + Screens, "renderer=" + (ForceGdi ? "gdi" : "gpu"),
-                    "musicviz=" + MusicConfig.Viz, "musicclock=" + MusicConfig.Clock };
+                    "musicviz=" + MusicConfig.Viz, "musicclock=" + MusicConfig.Clock, "clockscreen=" + SpanConfig.ClockScreen };
+                MusicConfig.SaveExtra(lines);
                 if (RandomPool != null) lines.Add("randompool=" + string.Join(",", RandomPool.ToArray()));
                 foreach (var kv in SceneFor) lines.Add("scene." + kv.Key + "=" + kv.Value);
                 File.WriteAllLines(SettingsPath, lines.ToArray());

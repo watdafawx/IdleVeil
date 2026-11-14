@@ -5,6 +5,7 @@
 //                audio-reactive scenes while nothing is playing
 //   SoundProbe   "is anything playing right now?", asked of the Windows audio meter (no capture)
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
@@ -14,10 +15,14 @@ namespace IdleVeil
     static class MusicConfig
     {
         // Music mode: what plays while music is on and what shows when it is quiet.
+        // Viz is a visualizer id or "random" (a new pick from Pool every time the music starts).
         public static string Viz = "spectrum";
         public static string Clock = "clock";
+        public static List<string> Pool;   // null: every visualizer
+        // Per-screen mode: a visualizer (or "random") per monitor, by EDID key. Missing: same as Viz.
+        public static readonly Dictionary<string, string> VizFor = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        public static readonly string[] Visualizers = { "spectrum", "scope", "scopering", "radial", "tunnel", "ripples" };
+        public static readonly string[] Visualizers = { "spectrum", "scope", "scopering", "radial", "tunnel", "ripples", "waterfall", "skyline", "burst", "lissajous", "ridges" };
         public static readonly string[] Clocks = { "clock", "clock-led", "clock-neon", "clock-analog", "clock-music" };
 
         public static string Label(string id)
@@ -29,6 +34,11 @@ namespace IdleVeil
                 case "radial": return "Radial";
                 case "tunnel": return "Tunnel";
                 case "ripples": return "Ripples";
+                case "waterfall": return "Waterfall";
+                case "skyline": return "Skyline";
+                case "burst": return "Beat burst";
+                case "lissajous": return "Lissajous";
+                case "ridges": return "Ridges";
                 case "spectrum": return "Spectrum (music)";
                 case "clock": return "Digital clock";
                 case "clock-led": return "LED clock";
@@ -36,16 +46,69 @@ namespace IdleVeil
                 case "clock-analog": return "Analog clock";
                 case "clock-music": return "Music clock";
                 case "music": return "Music (visualizer + clock)";
+                case "random": return "Random from pool";
                 default: return null;
             }
         }
 
-        // Called from Options.LoadSettings. Unknown ids are ignored.
+        static bool IsViz(string id) { return Array.IndexOf(Visualizers, id) >= 0; }
+
+        // Called from Options.LoadSettings with the key as written (musicviz.<key> keeps its case).
+        // Unknown ids are ignored.
         public static void Set(string key, string value)
         {
             value = (value ?? "").Trim().ToLowerInvariant();
-            if (key == "musicviz" && Array.IndexOf(Visualizers, value) >= 0) Viz = value;
-            else if (key == "musicclock" && Array.IndexOf(Clocks, value) >= 0) Clock = value;
+            string k = key.ToLowerInvariant();
+            if (k == "musicviz" && (IsViz(value) || value == "random")) Viz = value;
+            else if (k == "musicclock" && Array.IndexOf(Clocks, value) >= 0) Clock = value;
+            else if (k == "musicpool")
+            {
+                var list = new List<string>();
+                foreach (string part in value.Split(','))
+                {
+                    string id = part.Trim();
+                    if (IsViz(id) && !list.Contains(id)) list.Add(id);
+                }
+                Pool = list;
+            }
+            else if (k.StartsWith("musicviz.") && (IsViz(value) || value == "random")) VizFor[key.Substring(9)] = value;
+        }
+
+        public static void SaveExtra(List<string> lines)
+        {
+            if (Pool != null) lines.Add("musicpool=" + string.Join(",", Pool.ToArray()));
+            foreach (var kv in VizFor) lines.Add("musicviz." + kv.Key + "=" + kv.Value);
+        }
+
+        public static bool InPool(string id) { return Pool == null ? IsViz(id) : Pool.Contains(id); }
+
+        // The visualizers Random picks from (never empty).
+        public static string[] PoolIds()
+        {
+            var list = new List<string>();
+            foreach (string id in Visualizers) if (InPool(id)) list.Add(id);
+            if (list.Count == 0) list.AddRange(Visualizers);
+            return list.ToArray();
+        }
+
+        // What a screen's music mode shows: its own choice in per-screen mode, else Viz.
+        public static string ChoiceFor(ScreenMode mode, string screenKey)
+        {
+            string v;
+            if (mode == ScreenMode.PerScreen && !string.IsNullOrEmpty(screenKey) && VizFor.TryGetValue(screenKey, out v)) return v;
+            return Viz;
+        }
+
+        // One random seed per shown veil (SceneHost sets it), so in each mode every screen's music
+        // mode makes the same random pick, and they change together when the music starts again.
+        public static uint Session = 1;
+
+        public static string RandomPick(string[] ids, int generation, string salt)
+        {
+            uint h = Session * 2654435761u + (uint)generation * 40503u;
+            foreach (char c in salt ?? "") h = (h ^ c) * 16777619u;
+            h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
+            return ids[(int)(h % (uint)ids.Length)];
         }
 
         // GDI cannot draw the new scenes. A clock id, or music mode, falls back to the plain clock.
