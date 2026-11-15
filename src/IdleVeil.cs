@@ -10,8 +10,12 @@
 //  - it can turn one monitor off for real (e.g. an OLED, so it can run pixel cleaning) by detaching it
 //  - it hides the mouse cursor while showing, and has a tray icon for options
 //
-// Usage: IdleVeil.exe [--idle seconds] [--mode random|matrix|mystify] [--watch file] [--fps n]
-//                     [--preview] [--ignore-display-requests] [--exit]
+// Usage: IdleVeil.exe [--idle seconds] [--mode random|matrix|mystify|starfield|aurora|spectrum|fireflies|fire|snow|life|plasma|clock|blank]
+//                     [--screens span|each|mirror|perscreen] [--watch file] [--fps n] [--gdi] [--stats]
+//                     [--preview] [--settings] [--ignore-display-requests] [--exit]
+//        IdleVeil.exe --render-test <dir> [--mode id] [--screens m] [--frames n]   (PNGs of the GPU scenes, see Gpu/RenderTest.cs)
+// Drawing: Gpu/ (Direct3D 11, one window per monitor, docs/renderer.md), with the GDI SaverForm below as the fallback.
+// Settings: Settings/ (the settings window; the tray menu only has Show now, Pause, Settings... and Exit).
 // Build: ..\build.ps1 (uses the .NET Framework csc.exe that ships with Windows; C# 5 only).
 using System;
 using System.Collections.Generic;
@@ -51,6 +55,32 @@ namespace IdleVeil
         [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
         [DllImport("gdi32.dll")] public static extern bool Polyline(IntPtr hdc, POINT[] pts, int count);
+
+        // Scaled blits from a small off-screen canvas (see Savers.cs), and a DIB section so a
+        // scene can write its pixels as plain ints.
+        [StructLayout(LayoutKind.Sequential)]
+        public struct BITMAPINFOHEADER
+        {
+            public int biSize, biWidth, biHeight;
+            public short biPlanes, biBitCount;
+            public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        public struct BITMAPINFO { public BITMAPINFOHEADER bmiHeader; public int bmiColors; }
+
+        [DllImport("gdi32.dll")] public static extern IntPtr CreateDIBSection(IntPtr hdc, ref BITMAPINFO pbmi, uint usage, out IntPtr bits, IntPtr section, uint offset);
+        [DllImport("gdi32.dll")] public static extern int SetStretchBltMode(IntPtr hdc, int mode);
+        [DllImport("gdi32.dll")] public static extern bool StretchBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, int sw, int sh, uint rop);
+
+        [DllImport("gdi32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr CreateFont(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeout, uint charset, uint outPrecision, uint clipPrecision, uint quality, uint pitchAndFamily, string face);
+        [DllImport("gdi32.dll", CharSet = CharSet.Unicode)] public static extern bool TextOutW(IntPtr hdc, int x, int y, string s, int count);
+        [DllImport("gdi32.dll")] public static extern uint SetTextColor(IntPtr hdc, uint color);
+        [DllImport("gdi32.dll")] public static extern int SetBkMode(IntPtr hdc, int mode);
+        [DllImport("gdi32.dll")] public static extern bool SetTextAlign(IntPtr hdc, uint align);
+        [StructLayout(LayoutKind.Sequential)] public struct SIZE { public int CX, CY; }
+        [DllImport("gdi32.dll", CharSet = CharSet.Unicode)] public static extern bool GetTextExtentPoint32W(IntPtr hdc, string s, int count, out SIZE size);
+
+        public const int COLORONCOLOR = 3;
 
         [DllImport("user32.dll")] public static extern IntPtr CreateCursor(IntPtr inst, int hotX, int hotY, int w, int h, byte[] andMask, byte[] xorMask);
         [DllImport("user32.dll")] public static extern bool SetSystemCursor(IntPtr cursor, uint id);
@@ -149,18 +179,19 @@ namespace IdleVeil
         }
     }
 
-    // Settings and log live in %APPDATA%\IdleVeil, unless IdleVeil.ini sits next to the exe (portable mode).
+    // Settings and logs live in %APPDATA%\IdleVeil, unless IdleVeil.ini sits next to the exe (portable mode).
+    // A build from source without its own ini uses %APPDATA%\IdleVeilDev, never the installed copy's folder.
     static class AppPaths
     {
         public static readonly string Dir = PickDir();
         public static readonly string Settings = Path.Combine(Dir, "IdleVeil.ini");
-        public static readonly string Log = Path.Combine(Dir, "IdleVeil.log");
+        public static string Logs { get { return AppLog.Dir; } }
 
         static string PickDir()
         {
             string exeDir = AppDomain.CurrentDomain.BaseDirectory;
             if (File.Exists(Path.Combine(exeDir, "IdleVeil.ini"))) return exeDir;
-            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "IdleVeil");
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), Updater.IsDevBuild() ? "IdleVeilDev" : "IdleVeil");
             try { Directory.CreateDirectory(dir); } catch { }
             return dir;
         }
@@ -169,7 +200,8 @@ namespace IdleVeil
     // "Start with Windows" is a per-user entry under HKCU\...\Run (no admin rights needed).
     static class Autostart
     {
-        const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run", Name = "IdleVeil";
+        const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        static string Name { get { return Program.InstanceName; } }   // a dev build never touches the installed copy's entry
 
         static string Command { get { return "\"" + Application.ExecutablePath + "\""; } }
 
@@ -196,7 +228,13 @@ namespace IdleVeil
         public int IdleSeconds = 300;
         public string Mode = "random";
         public string WatchFile;
-        public int Fps = 30;
+        public int Fps = 30;                      // GDI frame rate
+        public int GpuFps = 60;                   // GPU frame-rate cap (vsync paces below it)
+        public string Screens = "each";           // span | each | mirror | perscreen (GPU renderer only)
+        public Dictionary<string, string> SceneFor = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);   // perscreen: EDID id -> scene
+        public bool ForceGdi;                     // never use the GPU renderer
+        public string RenderTestDir;              // --render-test: write PNGs and exit
+        public int RenderTestFrames = 3;
         public bool Preview;
         public string KeepOnFor = "fullscreen";   // honour "keep the display on" requests: fullscreen | always | never
         public bool HideCursor = true;
@@ -207,11 +245,15 @@ namespace IdleVeil
         public bool AfterUpdate;                  // started by the updater; wait for the old copy to quit
         public bool Debug;                        // log idle state every 10 s
         public int OffAfterSeconds = 300;         // how long after the veil appears
+        public bool AudioTest;                    // --audio-test: list audio devices, then levels of the chosen one for 5 s
+        public List<string> RandomPool;           // scenes Random may pick; null = the default set (SceneCatalog)
+        public bool OpenSettings;                 // --settings: open the settings window (in the running copy if there is one)
         public bool Exit;
+        public string CrashTest;                  // --crash-test ui|render|thread: throw on purpose (tests crash reports)
 
         static string SettingsPath { get { return AppPaths.Settings; } }
 
-        // Settings chosen from the tray menu override the command-line defaults.
+        // Settings chosen in the settings window override the command-line defaults.
         public void LoadSettings()
         {
             try
@@ -223,6 +265,12 @@ namespace IdleVeil
                     if (eq < 0) continue;
                     string k = line.Substring(0, eq).Trim().ToLowerInvariant(), v = line.Substring(eq + 1).Trim();
                     if (k == "mode") Mode = v.ToLowerInvariant();
+                    else if (k == "screens") Screens = ScreenModes.Name(ScreenModes.Parse(v));
+                    else if (k == "renderer") ForceGdi = v.ToLowerInvariant() == "gdi";
+                    else if (k == "musicviz" || k == "musicclock" || k == "musicpool" || k.StartsWith("musicviz.")) MusicConfig.Set(line.Substring(0, eq).Trim(), v);
+                    else if (k == "clockscreen") SpanConfig.Set(k, v);
+                    else if (k == "audiodevice") AudioConfig.Set(v);
+                    else if (k.StartsWith("scene.") && v != "") SceneFor[line.Substring(0, eq).Trim().Substring(6)] = v.ToLowerInvariant();
                     else if (k == "idle") IdleSeconds = int.Parse(v);
                     else if (k == "hidecursor") HideCursor = v == "1" || v.ToLowerInvariant() == "true";
                     else if (k == "ignoreinjected") IgnoreInjected = v == "1" || v.ToLowerInvariant() == "true";
@@ -230,6 +278,8 @@ namespace IdleVeil
                     else if (k == "offmonitor") OffMonitor = v;
                     else if (k == "offafter") OffAfterSeconds = int.Parse(v);
                     else if (k == "debug") Debug = v == "1";
+                    else if (k == "logdays") { int d; if (int.TryParse(v, out d) && d > 0) AppLog.Days = d; }
+                    else if (k == "randompool") RandomPool = SceneCatalog.ParsePool(v);
                     else if (k == "autoupdate") AutoUpdate = v == "1" || v.ToLowerInvariant() == "true";
                     else if (k == "noveilapps")
                     {
@@ -239,18 +289,58 @@ namespace IdleVeil
                 }
             }
             catch (Exception ex) { Program.Log("settings load error: " + ex.Message); }
+            ApplyLogLevel();
         }
+
+        public void ApplyLogLevel() { AppLog.Min = Debug || DebugFlag ? LogLevel.Debug : LogLevel.Info; }
+        static bool DebugFlag;   // --debug: debug logging for this run, whatever the ini says
+
+        // The ini lines, in file order.
+        public List<string> Lines()
+        {
+            var lines = new List<string> {
+                "mode=" + Mode, "idle=" + IdleSeconds, "hidecursor=" + (HideCursor ? "1" : "0"),
+                "ignoreinjected=" + (IgnoreInjected ? "1" : "0"), "keeponfor=" + KeepOnFor,
+                "offmonitor=" + OffMonitor, "offafter=" + OffAfterSeconds, "noveilapps=" + string.Join(",", NoVeilApps.ToArray()), "autoupdate=" + (AutoUpdate ? "1" : "0"),
+                "debug=" + (Debug ? "1" : "0"), "logdays=" + AppLog.Days, "screens=" + Screens, "renderer=" + (ForceGdi ? "gdi" : "gpu"),
+                "musicviz=" + MusicConfig.Viz, "musicclock=" + MusicConfig.Clock, "clockscreen=" + SpanConfig.ClockScreen, "audiodevice=" + AudioConfig.Device };
+            MusicConfig.SaveExtra(lines);
+            if (RandomPool != null) lines.Add("randompool=" + string.Join(",", RandomPool.ToArray()));
+            foreach (var kv in SceneFor) lines.Add("scene." + kv.Key + "=" + kv.Value);
+            return lines;
+        }
+
+        // Settings as key -> value, to log what changed.
+        public Dictionary<string, string> Snapshot()
+        {
+            var d = new Dictionary<string, string>();
+            foreach (string l in Lines())
+            {
+                int eq = l.IndexOf('=');
+                if (eq > 0) d[l.Substring(0, eq)] = l.Substring(eq + 1);
+            }
+            return d;
+        }
+
+        // "idle 120→300, mode fire→random" (keys added or removed show as "-").
+        public static string Diff(Dictionary<string, string> before, Dictionary<string, string> after)
+        {
+            var parts = new List<string>();
+            foreach (var kv in after)
+            {
+                string old;
+                if (!before.TryGetValue(kv.Key, out old)) old = "-";
+                if (old != kv.Value) parts.Add(kv.Key + " " + Show(old) + "→" + Show(kv.Value));
+            }
+            foreach (var kv in before) if (!after.ContainsKey(kv.Key)) parts.Add(kv.Key + " " + Show(kv.Value) + "→-");
+            return string.Join(", ", parts.ToArray());
+        }
+
+        static string Show(string v) { return v == "" ? "\"\"" : v; }
 
         public void SaveSettings()
         {
-            try
-            {
-                File.WriteAllLines(SettingsPath, new[] {
-                    "mode=" + Mode, "idle=" + IdleSeconds, "hidecursor=" + (HideCursor ? "1" : "0"),
-                    "ignoreinjected=" + (IgnoreInjected ? "1" : "0"), "keeponfor=" + KeepOnFor,
-                    "offmonitor=" + OffMonitor, "offafter=" + OffAfterSeconds, "noveilapps=" + string.Join(",", NoVeilApps.ToArray()), "autoupdate=" + (AutoUpdate ? "1" : "0"),
-                    "debug=" + (Debug ? "1" : "0") });
-            }
+            try { File.WriteAllLines(SettingsPath, Lines().ToArray()); }
             catch (Exception ex) { Program.Log("settings save error: " + ex.Message); }
         }
 
@@ -264,14 +354,27 @@ namespace IdleVeil
                 if (k == "--idle") { o.IdleSeconds = int.Parse(v); i++; }
                 else if (k == "--mode") { o.Mode = v.ToLowerInvariant(); i++; }
                 else if (k == "--watch") { o.WatchFile = v; i++; }
-                else if (k == "--fps") { o.Fps = int.Parse(v); i++; }
+                else if (k == "--fps") { o.Fps = o.GpuFps = int.Parse(v); i++; }
+                else if (k == "--screens") { o.Screens = ScreenModes.Name(ScreenModes.Parse(v)); i++; }
+                else if (k == "--gdi") o.ForceGdi = true;
+                else if (k == "--capturable") GpuVeil.Capturable = true;
+                else if (k == "--render-test") { o.RenderTestDir = v; i++; }
+                else if (k == "--frames") { o.RenderTestFrames = int.Parse(v); i++; }
                 else if (k == "--preview") o.Preview = true;
                 else if (k == "--ignore-display-requests") o.KeepOnFor = "never";
                 else if (k == "--count-injected-input") o.IgnoreInjected = false;
                 else if (k == "--off-monitor") { o.OffMonitor = v; i++; }
                 else if (k == "--off-after") { o.OffAfterSeconds = int.Parse(v); i++; }
-                else if (k == "--stats") SaverForm.Stats = true;
+                else if (k == "--stats") AppLog.PerfSeconds = 5;
+                else if (k == "--perf-every") { AppLog.PerfSeconds = Math.Max(1, int.Parse(v)); i++; }
+                else if (k == "--log-console") AppLog.ToConsole = true;
+                else if (k == "--debug") { DebugFlag = true; o.ApplyLogLevel(); }
+                else if (k == "--crash-test") { o.CrashTest = v.ToLowerInvariant(); GpuVeil.CrashTest = o.CrashTest == "render"; i++; }
+                else if (k == "--audio-test") o.AudioTest = true;
+                else if (k == "--audio-device") { AudioConfig.Override = AudioConfig.Normalize(v); i++; }
+                else if (k == "--fake-audio") AudioInput.Synthetic = true;
                 else if (k == "--exit") o.Exit = true;
+                else if (k == "--settings") o.OpenSettings = true;
                 else if (k == "--after-update") o.AfterUpdate = true;
             }
             return o;
@@ -280,12 +383,18 @@ namespace IdleVeil
 
     static class Program
     {
-        static string LogPath { get { return AppPaths.Log; } }
-        public const string ExitEventName = "Local\\IdleVeilExit";
+
+        // A copy built from source (build\IdleVeil.exe) runs under its own names, so it can be tested
+        // next to the installed copy.
+        public static readonly string InstanceName = Updater.IsDevBuild() ? "IdleVeilDev" : "IdleVeil";
+        public static string ExitEventName { get { return "Local\\" + InstanceName + "Exit"; } }
+        // --exit --preview closes a running preview the same way (so its perf summary gets written).
+        public static string PreviewExitEventName { get { return "Local\\" + InstanceName + "PreviewExit"; } }
+        public static string SettingsEventName { get { return "Local\\" + InstanceName + "Settings"; } }
 
         public static void Log(string msg)
         {
-            try { File.AppendAllText(LogPath, "[" + DateTime.Now.ToString("s") + "] " + msg + Environment.NewLine); } catch { }
+            AppLog.Legacy(msg);   // see Logging.cs; new code calls AppLog.Info/Warn with a category
         }
 
         // Puts a detached monitor back and its windows where they were (used on exit).
@@ -297,19 +406,53 @@ namespace IdleVeil
             DisplayDetach.RestoreWindows();
         }
 
+        // Per-monitor DPI awareness, so screen sizes are always real pixels even if display
+        // scaling changes after start-up (e.g. a different screen while the TV is off).
+        static void SetDpiAware()
+        {
+            try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); }   // PER_MONITOR_AWARE_V2, Windows 10 1703+
+            catch (EntryPointNotFoundException) { Native.SetProcessDPIAware(); }
+        }
+
         [STAThread]
         static void Main(string[] args)
         {
+            // A killed instance (or one that crashed while showing) leaves every system cursor
+            // blank: put the user's cursors back before anything else.
+            CursorHider.Restore();
+            if (Thread.CurrentThread.Name == null) Thread.CurrentThread.Name = "main";
+            AppDomain.CurrentDomain.ProcessExit += delegate { AppLog.Flush(1000); };
             var opt = Options.Parse(args);
+            if (AppLog.ToConsole) AppLog.OpenConsole();
+            if (opt.AudioTest)
+            {
+                opt.LoadSettings();
+                AudioFeed.AudioTest(5);
+                return;
+            }
+            if (opt.RenderTestDir != null)
+            {
+                SetDpiAware();
+                Environment.ExitCode = RenderTest.Run(opt.RenderTestDir, opt.Mode == "random" ? null : opt.Mode,
+                                                      Array.IndexOf(args, "--screens") >= 0 ? opt.Screens : null, opt.RenderTestFrames);
+                return;
+            }
             if (opt.Exit)
             {
                 // Ask a running instance to quit cleanly (used by the installer and uninstaller).
                 EventWaitHandle ev;
-                if (EventWaitHandle.TryOpenExisting(ExitEventName, out ev)) { ev.Set(); ev.Dispose(); }
+                if (EventWaitHandle.TryOpenExisting(opt.Preview ? PreviewExitEventName : ExitEventName, out ev)) { ev.Set(); ev.Dispose(); }
                 return;
             }
             bool created;
-            var mutex = new Mutex(true, opt.Preview ? "Local\\IdleVeilPreview" : "Local\\IdleVeil", out created);
+            var mutex = new Mutex(true, opt.Preview ? "Local\\IdleVeilPreview" : "Local\\" + InstanceName, out created);
+            if (!created && opt.OpenSettings)
+            {
+                // Already running: ask that copy to show (or focus) its settings window.
+                EventWaitHandle ev;
+                if (EventWaitHandle.TryOpenExisting(SettingsEventName, out ev)) { ev.Set(); ev.Dispose(); }
+                return;
+            }
             if (!created && opt.AfterUpdate)
             {
                 // The previous version is still shutting down (putting a monitor back, restoring windows).
@@ -317,27 +460,49 @@ namespace IdleVeil
                 catch (AbandonedMutexException) { created = true; }
             }
             if (!created) return;
-            // Per-monitor DPI awareness, so screen sizes are always real pixels even if display
-            // scaling changes after start-up (e.g. a different screen while the TV is off).
-            try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); }   // PER_MONITOR_AWARE_V2, Windows 10 1703+
-            catch (EntryPointNotFoundException) { Native.SetProcessDPIAware(); }
+            SetDpiAware();
+            HookCrashes();
             if (!opt.Preview) { opt.LoadSettings(); DisplayDetach.RecoverAfterCrash(); Updater.Cleanup(); }
-            CursorHider.Restore();
-            Log("started v" + AppInfo.Version + ": idle=" + opt.IdleSeconds + "s mode=" + opt.Mode + " watch=" + (opt.WatchFile ?? "-")
-                + " displayRequiredNow=" + Native.DisplayRequired());
+            AppLog.Info("app", "started v" + AppInfo.Version + (opt.Preview ? " (preview)" : "") + ": idle=" + opt.IdleSeconds + "s mode=" + opt.Mode + " screens=" + opt.Screens
+                + (opt.ForceGdi ? " gdi" : "") + " watch=" + (opt.WatchFile ?? "-") + " displayRequiredNow=" + Native.DisplayRequired()
+                + " log=" + AppLog.Min.ToString().ToLowerInvariant() + " perf every " + AppLog.PerfSeconds + " s");
+            try { foreach (string l in SystemInfo.Lines()) AppLog.Info("system", l); }
+            catch (Exception ex) { AppLog.Warn("system", "system info failed: " + ex.Message); }
             try { Application.Run(new Controller(opt)); }
-            catch (Exception ex) { Log("crashed: " + ex); }
+            catch (Exception ex) { AppLog.Crash("main loop (fatal)", ex); }
             finally { CursorHider.Restore(); ReattachNow(); }
+            AppLog.Info("app", "exit after " + AppLog.Uptime());
+            AppLog.Flush(2000);
             GC.KeepAlive(mutex);
+        }
+
+        // Unhandled exceptions get a crash report. On the UI thread the app keeps running (WinForms'
+        // own error dialog would sit on top of a veil with the cursor hidden); elsewhere .NET ends the
+        // process, so the cursor and a detached monitor are put back first.
+        static void HookCrashes()
+        {
+            try { Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException); }
+            catch (InvalidOperationException) { }
+            Application.ThreadException += delegate(object s, ThreadExceptionEventArgs e)
+            {
+                AppLog.Crash("UI thread (recovered)", e.Exception);
+                CursorHider.Restore();
+            };
+            AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e)
+            {
+                AppLog.Crash(e.IsTerminating ? "unhandled (fatal)" : "unhandled", e.ExceptionObject as Exception);
+                CursorHider.Restore();
+                if (e.IsTerminating) try { ReattachNow(); } catch { }
+            };
         }
     }
 
-    class Controller : ApplicationContext
+    class Controller : ApplicationContext, ISettingsHost
     {
         readonly Options opt;
         readonly System.Windows.Forms.Timer tick = new System.Windows.Forms.Timer();
         readonly Random rng = new Random();
-        SaverForm form;
+        IVeil form;
         uint inputAtShow;
         int shownAt, graceMs;
         long watchLen;
@@ -355,6 +520,8 @@ namespace IdleVeil
         public Controller(Options o)
         {
             opt = o;
+            settingsBefore = opt.Snapshot();
+            AppLog.Context = Describe;
             try { input = new PhysicalInput(); }
             catch (Exception ex) { Program.Log("raw input unavailable: " + ex.Message); }
             watchLen = WatchLength();
@@ -362,16 +529,106 @@ namespace IdleVeil
             tick.Tick += OnTick;
             tick.Start();
             Application.ApplicationExit += delegate { CursorHider.Restore(); Program.ReattachNow(); if (tray != null) tray.Visible = false; };
-            if (opt.Preview) ShowSaver(700);
-            else { CreateTray(); ListenForExit(); StartUpdateChecks(); }
+            if (opt.Preview)
+            {
+                ShowSaver(700, null);
+                var ui = SynchronizationContext.Current as WindowsFormsSynchronizationContext ?? new WindowsFormsSynchronizationContext();
+                exitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.PreviewExitEventName);
+                ThreadPool.RegisterWaitForSingleObject(exitEvent, delegate { ui.Post(delegate { AppLog.Info("veil", "preview closed by --exit"); if (form != null) HideSaver(); ExitThread(); }, null); }, null, -1, true);
+            }
+            if (opt.CrashTest == "ui" || opt.CrashTest == "thread")
+            {
+                var boom = new System.Windows.Forms.Timer { Interval = 2000 };
+                boom.Tick += delegate
+                {
+                    boom.Stop(); boom.Dispose();
+                    if (opt.CrashTest == "ui") throw new InvalidOperationException("crash test (--crash-test ui)");
+                    new Thread(delegate() { throw new InvalidOperationException("crash test (--crash-test thread)"); }) { Name = "crash test" }.Start();
+                };
+                boom.Start();
+            }
+            else
+            {
+                CreateTray(); ListenForExit(); StartUpdateChecks();
+                if (opt.OpenSettings)
+                {
+                    var once = new System.Windows.Forms.Timer { Interval = 1 };
+                    once.Tick += delegate { once.Stop(); once.Dispose(); ShowSettings(); };
+                    once.Start();
+                }
+            }
         }
+
+        EventWaitHandle settingsEvent;
 
         void ListenForExit()
         {
             var ui = SynchronizationContext.Current;
             exitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ExitEventName);
             ThreadPool.RegisterWaitForSingleObject(exitEvent, delegate { ui.Post(delegate { Quit(); }, null); }, null, -1, true);
+            settingsEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.SettingsEventName);
+            ThreadPool.RegisterWaitForSingleObject(settingsEvent, delegate { ui.Post(delegate { ShowSettings(); }, null); }, null, -1, false);
         }
+
+        // ---- settings window (ISettingsHost) ----
+
+        SettingsWindow settings;
+
+        public void ShowSettings()
+        {
+            try
+            {
+                if (settings == null || settings.IsDisposed)
+                {
+                    settings = new SettingsWindow(this, AppIcon);
+                    settings.FormClosed += delegate { settings = null; AppLog.Info("settings", "settings window closed"); };
+                    settings.Show();
+                    AppLog.Info("settings", "settings window opened");
+                }
+                else
+                {
+                    if (settings.WindowState == FormWindowState.Minimized) settings.WindowState = FormWindowState.Normal;
+                    settings.Show();
+                }
+                settings.Activate();
+                SetForegroundWindow(settings.Handle);
+            }
+            catch (Exception ex) { Program.Log("settings window failed: " + ex); }
+        }
+
+        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+
+        public Options Options { get { return opt; } }
+        public event EventHandler StateChanged;
+        public bool VeilShowing { get { return form != null; } }
+        public bool Paused { get { return paused; } }
+        public string PauseText { get { return !paused ? null : pausedUntil == DateTime.MaxValue ? "Paused until resumed" : "Paused until " + pausedUntil.ToString("t"); } }
+        public void Resume() { paused = false; AppLog.Info("app", "resumed"); UpdateTooltip(); RaiseState(); }
+        public void CheckForUpdates() { CheckForUpdates(true); }
+        public string UpdateStatus { get { return updateStatus; } }
+        public string RendererStatus { get { return rendererStatus; } }
+        public string LastFocusedApp { get { return lastFocusedApp; } }
+
+        string updateStatus, rendererStatus;
+        bool previewing;   // the veil was opened from the settings window: never turn a monitor off
+
+        // Show the real veil now with the current settings (or another mode); any input hides it.
+        public void Preview(string mode)
+        {
+            if (form != null) return;
+            previewing = true;
+            AppLog.Info("veil", "preview from settings: " + (mode ?? opt.Mode));
+            ShowSaver(1500, mode);
+            RaiseState();
+        }
+
+        void RaiseState()
+        {
+            EventHandler h = StateChanged;
+            if (h != null) try { h(this, EventArgs.Empty); } catch (Exception ex) { Program.Log("settings refresh failed: " + ex); }
+        }
+
+        void SetUpdateStatus(string s) { updateStatus = s; RaiseState(); }
 
         // ---- updates ----
 
@@ -392,28 +649,41 @@ namespace IdleVeil
         void CheckForUpdates(bool manual)
         {
             if (updating) return;
+            if (manual) SetUpdateStatus("Checking for updates...");
             Updater.CheckAsync(delegate (UpdateInfo u, Exception err)
             {
+                string when = " (checked " + DateTime.Now.ToString("t") + ")";
                 if (err != null)
                 {
                     Program.Log("update check failed: " + err.Message);
+                    SetUpdateStatus("Couldn't check for updates: " + err.Message + when);
                     if (manual) Notify("Couldn't check for updates", err.Message);
                     return;
                 }
                 if (u == null)
                 {
                     Program.Log("update check: up to date");
+                    SetUpdateStatus("You're up to date" + when + ".");
                     if (manual) Notify("IdleVeil is up to date", "You're on version " + AppInfo.Version + ".");
                     return;
                 }
                 Program.Log("update check: " + u.Version + " available");
                 if (Updater.IsDevBuild())
                 {
+                    SetUpdateStatus("Version " + u.Version + " is available. This copy was built from source, so it won't replace itself.");
                     if (manual) Notify("IdleVeil " + u.Version + " is available", "This copy was built from source, so it won't replace itself.");
                     return;
                 }
-                if (manual || opt.AutoUpdate) pendingUpdate = u;   // installed from OnTick once the veil is down
-                else Notify("IdleVeil " + u.Version + " is available", "Right-click the tray icon and choose Check for updates to install it.");
+                if (manual || opt.AutoUpdate)
+                {
+                    pendingUpdate = u;   // installed from OnTick once the veil is down
+                    SetUpdateStatus("Version " + u.Version + " will be installed as soon as the veil isn't showing.");
+                }
+                else
+                {
+                    SetUpdateStatus("Version " + u.Version + " is available. Click Check now to install it.");
+                    Notify("IdleVeil " + u.Version + " is available", "Open Settings > General and click Check now to install it.");
+                }
             });
         }
 
@@ -430,6 +700,7 @@ namespace IdleVeil
                 updating = false;
                 if (err == null) { Quit(); return; }
                 Program.Log("update failed: " + err.Message);
+                SetUpdateStatus("The update failed: " + err.Message);
                 Notify("IdleVeil update failed", err.Message);
             });
         }
@@ -444,6 +715,8 @@ namespace IdleVeil
 
         void Quit()
         {
+            AppLog.Info("app", "quitting");
+            if (settings != null && !settings.IsDisposed) settings.Close();
             if (form != null) HideSaver();
             Program.ReattachNow();
             if (tray != null) tray.Visible = false;
@@ -455,189 +728,94 @@ namespace IdleVeil
         void CreateTray()
         {
             tray = new NotifyIcon();
-            tray.Icon = MakeIcon();
+            tray.Icon = AppIcon;
             tray.ContextMenuStrip = new ContextMenuStrip();
+            tray.ContextMenuStrip.Renderer = new DarkMenu.Renderer(null);
+            DarkMenu.Style(tray.ContextMenuStrip);
             tray.ContextMenuStrip.Opening += delegate { BuildMenu(); };
-            tray.DoubleClick += delegate { ShowNow(); };
+            tray.DoubleClick += delegate { AppLog.Info("tray", "double-click: settings"); ShowSettings(); };
             BuildMenu();
             UpdateTooltip();
             tray.Visible = true;
         }
 
+        // Everything else lives in the settings window.
         void BuildMenu()
         {
             var items = tray.ContextMenuStrip.Items;
             items.Clear();
+            items.Add(new ToolStripMenuItem("Show now", null, delegate { AppLog.Info("tray", "show now"); ShowNow(); }));
 
-            var show = new ToolStripMenuItem("Show now", null, delegate { ShowNow(); });
-            show.Font = new Font(show.Font, FontStyle.Bold);
-            items.Add(show);
-            items.Add(new ToolStripSeparator());
-
-            var anim = new ToolStripMenuItem("Animation");
-            AddChoice(anim, "Random", opt.Mode == "random", delegate { opt.Mode = "random"; Changed(); });
-            AddChoice(anim, "Matrix rain", opt.Mode == "matrix", delegate { opt.Mode = "matrix"; Changed(); });
-            AddChoice(anim, "Mystify", opt.Mode == "mystify", delegate { opt.Mode = "mystify"; Changed(); });
-            AddChoice(anim, "Blank (black)", opt.Mode == "blank", delegate { opt.Mode = "blank"; Changed(); });
-            items.Add(anim);
-
-            var after = new ToolStripMenuItem("Start after");
-            foreach (int min in new[] { 1, 2, 5, 10, 15, 30, 60 })
-            {
-                int m = min;
-                AddChoice(after, m + (m == 1 ? " minute" : " minutes"), opt.IdleSeconds == m * 60,
-                          delegate { opt.IdleSeconds = m * 60; Changed(); });
-            }
-            items.Add(after);
-
-            var cursor = new ToolStripMenuItem("Hide cursor", null, delegate { opt.HideCursor = !opt.HideCursor; Changed(); });
-            cursor.Checked = opt.HideCursor;
-            items.Add(cursor);
-
-            var injected = new ToolStripMenuItem("Ignore input from apps (AI agents, automation)", null,
-                delegate { opt.IgnoreInjected = !opt.IgnoreInjected; Changed(); });
-            injected.Checked = opt.IgnoreInjected;
-            items.Add(injected);
-
-            var keep = new ToolStripMenuItem("Keep screen on for video");
-            AddChoice(keep, "Fullscreen only", opt.KeepOnFor == "fullscreen", delegate { opt.KeepOnFor = "fullscreen"; Changed(); });
-            AddChoice(keep, "Always", opt.KeepOnFor == "always", delegate { opt.KeepOnFor = "always"; Changed(); });
-            AddChoice(keep, "Never", opt.KeepOnFor == "never", delegate { opt.KeepOnFor = "never"; Changed(); });
-            items.Add(keep);
-            items.Add(BuildMonitorMenu());
-            items.Add(BuildAppsMenu());
-            items.Add(new ToolStripSeparator());
-
-            if (paused)
-            {
-                string until = pausedUntil == DateTime.MaxValue ? "until resumed" : "until " + pausedUntil.ToString("t");
-                items.Add(new ToolStripMenuItem("Paused " + until) { Enabled = false });
-                items.Add(new ToolStripMenuItem("Resume", null, delegate { paused = false; UpdateTooltip(); }));
-            }
+            var pause = new ToolStripMenuItem(paused ? PauseText : "Pause");
+            if (paused) pause.DropDownItems.Add(new ToolStripMenuItem("Resume", null, delegate { Resume(); }));
             else
             {
-                items.Add(new ToolStripMenuItem("Pause for 1 hour", null, delegate { Pause(DateTime.Now.AddHours(1)); }));
-                items.Add(new ToolStripMenuItem("Pause until resumed", null, delegate { Pause(DateTime.MaxValue); }));
+                pause.DropDownItems.Add(new ToolStripMenuItem("For 30 minutes", null, delegate { Pause(DateTime.Now.AddMinutes(30)); }));
+                pause.DropDownItems.Add(new ToolStripMenuItem("For 1 hour", null, delegate { Pause(DateTime.Now.AddHours(1)); }));
+                pause.DropDownItems.Add(new ToolStripMenuItem("For 2 hours", null, delegate { Pause(DateTime.Now.AddHours(2)); }));
+                pause.DropDownItems.Add(new ToolStripMenuItem("Until resumed", null, delegate { Pause(DateTime.MaxValue); }));
             }
+            pause.DropDown.Renderer = tray.ContextMenuStrip.Renderer;
+            DarkMenu.Style(pause.DropDown);
+            items.Add(pause);
+
+            var open = new ToolStripMenuItem("Settings...", null, delegate { AppLog.Info("tray", "settings"); ShowSettings(); });
+            open.Font = new Font(open.Font, FontStyle.Bold);   // the double-click action
+            items.Add(open);
             items.Add(new ToolStripSeparator());
-
-            bool auto = false;
-            try { auto = Autostart.Enabled; } catch { }
-            var startup = new ToolStripMenuItem("Start with Windows", null, delegate
-            {
-                try { Autostart.Enabled = !auto; Program.Log("autostart: " + !auto); }
-                catch (Exception ex) { Program.Log("autostart error: " + ex.Message); }
-            });
-            startup.Checked = auto;
-            items.Add(startup);
-
-            var autoUpd = new ToolStripMenuItem("Install updates automatically", null, delegate { opt.AutoUpdate = !opt.AutoUpdate; Changed(); });
-            autoUpd.Checked = opt.AutoUpdate;
-            items.Add(autoUpd);
-            items.Add(new ToolStripMenuItem("Check for updates (v" + AppInfo.Version + ")", null, delegate { CheckForUpdates(true); }));
-            items.Add(new ToolStripMenuItem("About IdleVeil", null, delegate { About(); }));
-            items.Add(new ToolStripMenuItem("Exit", null, delegate { Quit(); }));
+            items.Add(new ToolStripMenuItem("Exit", null, delegate { AppLog.Info("tray", "exit"); Quit(); }));
         }
 
         // The last real app that had focus (opening the tray menu moves focus to the taskbar).
         string lastFocusedApp;
+        static readonly string OwnExe = System.Diagnostics.Process.GetCurrentProcess().ProcessName.ToLowerInvariant() + ".exe";
 
-        ToolStripMenuItem BuildAppsMenu()
-        {
-            var menu = new ToolStripMenuItem("Don't show while using");
-            string own = System.Diagnostics.Process.GetCurrentProcess().ProcessName.ToLowerInvariant() + ".exe";
-            if (lastFocusedApp != null && lastFocusedApp != own && !opt.NoVeilApps.Contains(lastFocusedApp))
-            {
-                string app = lastFocusedApp;
-                menu.DropDownItems.Add(new ToolStripMenuItem("Add " + app, null, delegate { opt.NoVeilApps.Add(app); Changed(); }));
-            }
-            if (opt.NoVeilApps.Count > 0)
-            {
-                if (menu.DropDownItems.Count > 0) menu.DropDownItems.Add(new ToolStripSeparator());
-                menu.DropDownItems.Add(new ToolStripMenuItem("Click an app to remove it:") { Enabled = false });
-                foreach (string a in opt.NoVeilApps.ToArray())
-                {
-                    string app = a;
-                    var item = new ToolStripMenuItem(app, null, delegate { opt.NoVeilApps.Remove(app); Changed(); });
-                    item.Checked = true;
-                    menu.DropDownItems.Add(item);
-                }
-            }
-            if (menu.DropDownItems.Count == 0)
-                menu.DropDownItems.Add(new ToolStripMenuItem("Focus an app, then open this menu to add it") { Enabled = false });
-            return menu;
-        }
-
-        ToolStripMenuItem BuildMonitorMenu()
-        {
-            var menu = new ToolStripMenuItem("Turn off monitor");
-            AddChoice(menu, "None", opt.OffMonitor == "", delegate { opt.OffMonitor = ""; Changed(); });
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (DisplayDetach.IsDetached && opt.OffMonitor != "")
-            {
-                seen.Add(opt.OffMonitor);
-                AddChoice(menu, DisplayDetach.DetachedName + " (off now)", true, delegate { });
-            }
-            foreach (var m in DisplayDetach.List())
-            {
-                if (m.Id == "" || !seen.Add(m.Id)) continue;
-                string id = m.Id;
-                AddChoice(menu, m.Name + " (" + id + ")", string.Equals(opt.OffMonitor, id, StringComparison.OrdinalIgnoreCase),
-                          delegate { opt.OffMonitor = id; Changed(); });
-            }
-            menu.DropDownItems.Add(new ToolStripSeparator());
-            menu.DropDownItems.Add(new ToolStripMenuItem("After the veil has shown for:") { Enabled = false });
-            foreach (int min in new[] { 1, 2, 5, 10, 15, 30, 60 })
-            {
-                int m = min;
-                AddChoice(menu, "    " + m + (m == 1 ? " minute" : " minutes"), opt.OffAfterSeconds == m * 60,
-                          delegate { opt.OffAfterSeconds = m * 60; Changed(); });
-            }
-            return menu;
-        }
-
-        static void About()
-        {
-            MessageBox.Show(
-                "IdleVeil " + AppInfo.Version + "\n\n" +
-                "Burn-in protection overlay that stays out of the way of remote control and screen capture.\n\n" +
-                "Settings and log: " + AppPaths.Dir,
-                "About IdleVeil", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
-
-        static void AddChoice(ToolStripMenuItem parent, string text, bool isChecked, EventHandler onClick)
-        {
-            var item = new ToolStripMenuItem(text, null, onClick);
-            item.Checked = isChecked;
-            parent.DropDownItems.Add(item);
-        }
-
-        void Changed()
+        public void Changed()
         {
             opt.SaveSettings();
             UpdateTooltip();
-            Program.Log("settings: idle=" + opt.IdleSeconds + "s mode=" + opt.Mode + " hideCursor=" + opt.HideCursor
-                + " noVeilApps=" + string.Join(",", opt.NoVeilApps.ToArray()) + " ignoreInjected=" + opt.IgnoreInjected + " keepOnFor=" + opt.KeepOnFor + " offMonitor=" + opt.OffMonitor + " offAfter=" + opt.OffAfterSeconds + "s");
+            RaiseState();
+            opt.ApplyLogLevel();
+            Dictionary<string, string> now = opt.Snapshot();
+            string diff = Options.Diff(settingsBefore, now);
+            settingsBefore = now;
+            if (diff != "") AppLog.Info("settings", "changed: " + diff);
         }
 
-        void Pause(DateTime until)
+        Dictionary<string, string> settingsBefore;
+
+        // For crash reports: what is showing, on which layout.
+        string Describe()
+        {
+            IVeil f = form;
+            return "veil=" + (f == null ? "hidden" : "showing " + shownMode + " (" + (f is GpuVeil ? "gpu" : "gdi") + ")" + (previewing ? " preview" : ""))
+                   + " setting mode=" + opt.Mode + " screens=" + opt.Screens + (paused ? " paused" : "") + " layout=" + SystemInformation.VirtualScreen
+                   + " monitors=" + Screen.AllScreens.Length + (DisplayDetach.IsDetached ? " (one detached)" : "");
+        }
+
+        public void Pause(DateTime until)
         {
             paused = true;
             pausedUntil = until;
+            AppLog.Info("app", "paused " + (until == DateTime.MaxValue ? "until resumed" : "until " + until.ToString("HH:mm")));
             UpdateTooltip();
+            RaiseState();
         }
 
         void ShowNow()
         {
-            if (form == null) ShowSaver(1500);   // a little longer grace so the click that chose it doesn't close it
+            if (form == null) ShowSaver(1500, null);   // a little longer grace so the click that chose it doesn't close it
         }
 
         void UpdateTooltip()
         {
             if (tray == null) return;
-            string mode = opt.Mode == "matrix" ? "Matrix rain" : opt.Mode == "mystify" ? "Mystify" : "Random";
+            string mode = opt.Mode == "random" ? "Random" : SceneCatalog.Label(opt.Mode);
             tray.Text = paused ? "IdleVeil (paused)" : "IdleVeil: " + mode + " after " + (opt.IdleSeconds / 60) + " min";
         }
+
+        static Icon appIcon;
+        public static Icon AppIcon { get { return appIcon ?? (appIcon = MakeIcon()); } }
 
         static Icon MakeIcon()
         {
@@ -688,7 +866,7 @@ namespace IdleVeil
 
         void MaybeDetach(int now)
         {
-            if (opt.Preview || opt.OffMonitor == "" || DisplayDetach.IsDetached) return;
+            if (opt.Preview || previewing || opt.OffMonitor == "" || DisplayDetach.IsDetached) return;
             if (now - shownAt < opt.OffAfterSeconds * 1000 || now - detachRetryAt < 0) return;
             if (input != null && input.Ok && (uint)now - input.LastInjectedTick < AgentQuietMs)
             {
@@ -707,7 +885,7 @@ namespace IdleVeil
                 Controllers.Poll();
                 uint lastInput = InputTick();
                 string fgApp = Native.ForegroundApp();
-                if (fgApp != null && form == null) lastFocusedApp = fgApp;
+                if (fgApp != null && form == null && fgApp != OwnExe) lastFocusedApp = fgApp;
                 bool appKeepsOn = fgApp != null && opt.NoVeilApps.Contains(fgApp);
                 MaybeInstallUpdate();
                 long len = WatchLength();
@@ -719,44 +897,60 @@ namespace IdleVeil
                 {
                     // The screen layout changed while showing (e.g. the TV was switched off and back on):
                     // rebuild the overlay at the new size so it covers everything again.
-                    if (SystemInformation.VirtualScreen != form.Area) RebuildSaver();
+                    if (SystemInformation.VirtualScreen != form.Area || form.Broken) RebuildSaver();
                     // Ignore input in the first moment (e.g. the Enter key that launched a preview).
                     if (now - shownAt < graceMs) { inputAtShow = lastInput; return; }
                     if (lastInput != inputAtShow || logGrew || displayRequired)
                     {
-                        Program.Log("veil hidden: " + (lastInput != inputAtShow ? "input" : logGrew ? "watched file grew" : "fullscreen app keeps display on"));
+                        AppLog.Info("veil", "veil hidden after " + (now - shownAt) / 1000 + " s: " + (lastInput != inputAtShow ? "input" + (input != null && input.Ok ? " (" + input.LastSource + ")" : "") : logGrew ? "watched file grew" : "fullscreen app keeps display on"));
                         HideSaver();
                         lastActivity = now;
+                        idleStats.Reset();
+                        lastIdlePerf = now;
                         if (opt.Preview) ExitThread();
+                        RaiseState();
                         return;
                     }
                     MaybeDetach(now);
                     return;
                 }
 
+                if (now - lastIdlePerf >= IdlePerfMs)
+                {
+                    lastIdlePerf = now;
+                    AppLog.Perf("idle " + idleStats.Sample() + (paused ? " paused" : ""));
+                }
                 if (logGrew || displayRequired || appKeepsOn) lastActivity = now;
-                if (paused && DateTime.Now >= pausedUntil) { paused = false; UpdateTooltip(); }
+                if (paused && DateTime.Now >= pausedUntil) { paused = false; UpdateTooltip(); RaiseState(); }
                 if (paused) return;
                 int sinceInput = (int)((uint)now - lastInput);
                 int idle = Math.Min(sinceInput, now - lastActivity);
-                if (opt.Debug && now - lastDebugLog > 10000)
+                if (AppLog.DebugOn && now - lastDebugLog > 10000)
                 {
                     lastDebugLog = now;
-                    Program.Log("debug: sinceInput=" + sinceInput + " sinceActivity=" + (now - lastActivity)
+                    AppLog.Debug("idle", "sinceInput=" + sinceInput + " sinceActivity=" + (now - lastActivity)
                         + " sinceInjected=" + (input != null && input.Ok ? ((uint)now - input.LastInjectedTick).ToString() : "-")
                         + " displayRequired=" + Native.DisplayRequired() + " fullscreenFg=" + Native.ForegroundIsFullscreen()
                         + " fgApp=" + (fgApp ?? "-") + " lastPhysical=" + (input != null ? input.LastSource : "-")
                         + " lastController=" + (Controllers.LastSource ?? "-"));
                 }
-                if (idle >= opt.IdleSeconds * 1000) { Program.Log("veil shown after " + idle / 1000 + "s idle"); ShowSaver(700); }
+                if (idle >= opt.IdleSeconds * 1000) { AppLog.Info("veil", "idle for " + idle / 1000 + " s, showing the veil"); ShowSaver(700, null); RaiseState(); }
             }
-            catch (Exception ex) { Program.Log("tick error: " + ex); }
+            catch (Exception ex) { AppLog.Error("app", "tick error: " + ex); }
         }
 
-        void ShowSaver(int grace)
+        const int IdlePerfMs = 5 * 60 * 1000;
+        int lastIdlePerf = Environment.TickCount;
+        readonly ProcessStats idleStats = new ProcessStats();
+
+        // mode: null = the configured one (Random picks from the pool).
+        void ShowSaver(int grace, string mode)
         {
-            shownMode = opt.Mode == "random" ? (rng.Next(2) == 0 ? "matrix" : "mystify") : opt.Mode;
-            form = new SaverForm(shownMode, opt.Fps);
+            mode = mode ?? opt.Mode;
+            shownMode = mode == "random" ? SceneCatalog.Pick(rng, opt.RandomPool) : mode;
+            form = CreateVeil(shownMode);
+            AppLog.Info("veil", "veil shown: " + shownMode + (mode == "random" ? " (picked by random)" : "") + " screens=" + opt.Screens
+                        + " renderer=" + (form is GpuVeil ? "gpu" : "gdi") + " layout=" + SystemInformation.VirtualScreen);
             form.ShowSaver();
             if (opt.HideCursor) CursorHider.Hide();
             graceMs = grace;
@@ -768,19 +962,67 @@ namespace IdleVeil
 
         void RebuildSaver()
         {
-            Program.Log("screen changed to " + SystemInformation.VirtualScreen + ", resizing overlay");
-            form.Close();
+            AppLog.Warn(form.Broken ? "gpu" : "display", (form.Broken ? "GPU overlay broke" : "screen changed to " + SystemInformation.VirtualScreen) + ", rebuilding overlay");
             form.Dispose();
-            form = new SaverForm(shownMode, opt.Fps);
+            form = CreateVeil(shownMode);
             form.ShowSaver();
+            AppLog.Info(form is GpuVeil ? "gpu" : "veil", "overlay rebuilt (" + (form is GpuVeil ? "gpu" : "gdi") + ")");
+        }
+
+        // The GPU overlay when every screen's scene has a GPU version, else the GDI one.
+        IVeil CreateVeil(string mode)
+        {
+            if (opt.ForceGdi) rendererStatus = "Off: using the GDI renderer.";
+            else
+            {
+                try
+                {
+                    GpuScreen[] screens = GpuScreen.Current();
+                    ScreenMode sm = ScreenModes.Parse(opt.Screens);
+                    var ids = new string[screens.Length];
+                    for (int i = 0; i < screens.Length; i++) ids[i] = sm == ScreenMode.PerScreen ? SceneFor(screens[i], mode) : mode;
+                    string missing = Array.Find(ids, id => !GpuScenes.Has(id));
+                    if (missing != null)
+                    {
+                        Program.Log("no GPU version of " + missing + " yet, using GDI");
+                        rendererStatus = Savers.Label(missing) + " has no GPU version, so it was drawn with GDI (" + DateTime.Now.ToString("t") + ").";
+                    }
+                    else
+                    {
+                        IVeil v = GpuVeil.TryCreate(screens, sm, ids, opt.GpuFps);
+                        if (v != null)
+                        {
+                            rendererStatus = "Working: last shown on " + GpuVeil.LastAdapter + " at " + DateTime.Now.ToString("t") + ".";
+                            return v;
+                        }
+                        rendererStatus = "Fell back to GDI at " + DateTime.Now.ToString("t") + ": " + (GpuVeil.LastError ?? "unknown error")
+                                         + ". It tries the GPU again after 10 minutes.";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Program.Log("GPU overlay failed, using GDI: " + ex);
+                    rendererStatus = "Fell back to GDI at " + DateTime.Now.ToString("t") + ": " + ex.Message;
+                }
+            }
+            return new SaverForm(mode, opt.Fps);
+        }
+
+        // perscreen: the scene chosen for this monitor, else the animation if it has a GPU version, else a random GPU scene.
+        string SceneFor(GpuScreen s, string mode)
+        {
+            string id;
+            if (opt.SceneFor.TryGetValue(s.Key, out id) && GpuScenes.Has(id)) return id;
+            if (GpuScenes.Has(mode)) return mode;
+            return MusicConfig.RandomGpu(rng);   // not "blank", and no music scene while it is quiet
         }
 
         void HideSaver()
         {
             CursorHider.Restore();
-            form.Close();
             form.Dispose();
             form = null;
+            previewing = false;
             detachRetryAt = 0;
             if (DisplayDetach.IsDetached)
             {
@@ -799,22 +1041,25 @@ namespace IdleVeil
         void Draw(IntPtr hdc);
     }
 
-    class SaverForm : Form
+    class SaverForm : Form, IVeil
     {
+        public bool Broken { get { return false; } }
+
         readonly IAnimation anim;
         readonly System.Windows.Forms.Timer frame = new System.Windows.Forms.Timer();
         // Our own GDI back buffer: WinForms' double buffer converts the whole frame between GDI+ and GDI, which is slow at 1440p.
         readonly IntPtr bufDC, bufBmp, oldBufBmp;
         readonly int w, h;
-        public readonly Rectangle Area;   // the screen area this overlay was built for
+        readonly Rectangle area;
+        public Rectangle Area { get { return area; } }   // the screen area this overlay was built for
 
         public SaverForm(string mode, int fps)
         {
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
-            Area = SystemInformation.VirtualScreen;
-            Bounds = Area;
+            area = SystemInformation.VirtualScreen;
+            Bounds = area;
             BackColor = Color.Black;
             Text = "IdleVeil";
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.Opaque, true);
@@ -827,12 +1072,14 @@ namespace IdleVeil
             oldBufBmp = Native.SelectObject(bufDC, bufBmp);
             Native.PatBlt(bufDC, 0, 0, w, h, Native.BLACKNESS);
 
-            anim = mode == "matrix" ? (IAnimation)new MatrixRain(Bounds.Size)
-                 : mode == "blank" ? (IAnimation)new Blank(Bounds.Size)
-                 : new Mystify(Bounds.Size);
+            // Every scene is built for each monitor separately (see PerMonitor), so it is centered
+            // and sized for that screen instead of stretched across the bezels.
+            if (mode == "blank") anim = new Blank(Bounds.Size);
+            else anim = new PerMonitor(area, delegate(Size s) { return Savers.Create(mode, s) ?? (IAnimation)new Mystify(s); });
             // Blank never changes: redraw rarely, just to stay on top.
             frame.Interval = mode == "blank" ? 500 : Math.Max(10, 1000 / Math.Max(1, fps));
             frame.Tick += delegate { RenderFrame(); };
+            stats = new FrameStats(Math.Max(1, 1000 / frame.Interval), "gdi " + area.Width + "x" + area.Height + " " + mode);
         }
 
         protected override bool ShowWithoutActivation { get { return true; } }
@@ -896,25 +1143,23 @@ namespace IdleVeil
 
         protected override void OnPaintBackground(PaintEventArgs e) { }
 
-        public static bool Stats;
-        readonly System.Diagnostics.Stopwatch drawSw = new System.Diagnostics.Stopwatch();
-        readonly System.Diagnostics.Stopwatch wallSw = System.Diagnostics.Stopwatch.StartNew();
+        readonly FrameStats stats;
+        long lastFrame = System.Diagnostics.Stopwatch.GetTimestamp();
         int frames;
 
         void RenderFrame()
         {
-            drawSw.Start();
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+            double f = System.Diagnostics.Stopwatch.Frequency / 1000.0;
             anim.Step();
             anim.Draw(bufDC);
             Present();
-            drawSw.Stop();
+            long end = System.Diagnostics.Stopwatch.GetTimestamp();
+            stats.Frame((start - lastFrame) / f, (end - start) / f, end);
+            lastFrame = start;
             frames++;
             if (frames % 10 == 0) RaiseToTop();
-            if (Stats && wallSw.ElapsedMilliseconds > 5000)
-            {
-                Program.Log("stats: fps=" + (frames * 1000 / wallSw.ElapsedMilliseconds) + " frame ms=" + (drawSw.ElapsedMilliseconds / (double)frames).ToString("0.0"));
-                frames = 0; drawSw.Reset(); wallSw.Restart();
-            }
+            if (stats.Due(end)) AppLog.Perf(stats.Report(end));
         }
 
         void Present()
@@ -930,6 +1175,7 @@ namespace IdleVeil
         {
             if (disposing)
             {
+                try { AppLog.Perf(stats.Summary(System.Diagnostics.Stopwatch.GetTimestamp())); } catch { }
                 frame.Stop(); frame.Dispose(); anim.Dispose();
                 Native.SelectObject(bufDC, oldBufBmp);
                 Native.DeleteObject(bufBmp);

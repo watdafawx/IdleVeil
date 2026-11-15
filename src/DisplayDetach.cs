@@ -39,6 +39,13 @@ namespace IdleVeil
         [DllImport("user32.dll")] static extern int QueryDisplayConfig(uint flags, ref uint np, [Out] PathInfo[] paths, ref uint nm, [Out] ModeInfo[] modes, IntPtr topology);
         [DllImport("user32.dll")] static extern int SetDisplayConfig(uint np, PathInfo[] paths, uint nm, ModeInfo[] modes, uint flags);
         [DllImport("user32.dll")] static extern int DisplayConfigGetDeviceInfo(ref TargetName name);
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct SourceName
+        {
+            public uint Type, Size; public LUID Adapter; public uint Id;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string GdiName;
+        }
+        [DllImport("user32.dll")] static extern int DisplayConfigGetDeviceInfo(ref SourceName name);
 
         const uint QDC_ONLY_ACTIVE_PATHS = 2;
         const uint SDC_APPLY = 0x80, SDC_USE_SUPPLIED = 0x20, SDC_ALLOW_CHANGES = 0x400, SDC_VALIDATE = 0x40, SDC_USE_DATABASE_CURRENT = 0xF;
@@ -90,6 +97,25 @@ namespace IdleVeil
             if (!Query(out paths, out modes)) return list;
             foreach (var p in paths) list.Add(Describe(p.Target));
             return list;
+        }
+
+        // Active monitors by GDI device name (\\.\DISPLAY1, as in Screen.DeviceName), to match a
+        // WinForms Screen to its EDID id.
+        public static Dictionary<string, MonitorInfo> ByGdiName()
+        {
+            var map = new Dictionary<string, MonitorInfo>(StringComparer.OrdinalIgnoreCase);
+            PathInfo[] paths; ModeInfo[] modes;
+            if (!Query(out paths, out modes)) return map;
+            foreach (var p in paths)
+            {
+                var n = new SourceName();
+                n.Type = 1;   // DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME
+                n.Size = (uint)Marshal.SizeOf(typeof(SourceName));
+                n.Adapter = p.Source.Adapter; n.Id = p.Source.Id;
+                if (DisplayConfigGetDeviceInfo(ref n) != 0 || string.IsNullOrEmpty(n.GdiName)) continue;
+                map[n.GdiName] = Describe(p.Target);
+            }
+            return map;
         }
 
         public static bool Detach(string monitorId)

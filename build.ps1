@@ -19,10 +19,13 @@ New-Item -ItemType Directory -Force $obj, $dist | Out-Null
 
 # ---- shared version info ----
 $versionCs = Join-Path $obj 'Version.cs'
+# AssemblyVersion/FileVersion must be numeric: strip a prerelease suffix like -dev or -beta.2.
+$numeric = $Version -replace '[^0-9.].*$', ''
+if ($numeric -notmatch '^\d+(\.\d+){1,3}$') { $numeric = '1.0.0' }
 @"
 using System.Reflection;
-[assembly: AssemblyVersion("$Version.0")]
-[assembly: AssemblyFileVersion("$Version.0")]
+[assembly: AssemblyVersion("$numeric.0")]
+[assembly: AssemblyFileVersion("$numeric.0")]
 [assembly: AssemblyInformationalVersion("$Version")]
 [assembly: AssemblyProduct("IdleVeil")]
 [assembly: AssemblyTitle("IdleVeil")]
@@ -75,7 +78,7 @@ $w.Close()
 $appExe = Join-Path $obj 'IdleVeil.exe'
 & $csc /nologo /target:winexe /optimize+ /out:"$appExe" /win32icon:"$ico" `
     /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll `
-    (Get-ChildItem (Join-Path $root 'src') -Filter *.cs).FullName $versionCs
+    (Get-ChildItem (Join-Path $root 'src') -Filter *.cs -Recurse).FullName $versionCs
 if ($LASTEXITCODE) { throw "IdleVeil.exe build failed" }
 
 # ---- installer (embeds the app) ----

@@ -2,7 +2,7 @@
 
 Burn-in protection for OLED screens that stays out of your way.
 
-IdleVeil shows a screensaver-style animation (Matrix rain, Mystify or plain black) when your PC has been idle for a while, and can turn an OLED monitor off for real. Unlike the built-in Windows screensaver, it **doesn't switch to a separate desktop**, so anything running in the background keeps working: remote-control tools, game streaming (Sunshine, Parsec, Moonlight), automation, and AI agents that drive the desktop.
+IdleVeil shows a screensaver-style animation (Matrix rain, Starfield, Aurora, Fire, Snow, Game of Life, Plasma and more, or plain black) when your PC has been idle for a while, and can turn an OLED monitor off for real. Unlike the built-in Windows screensaver, it **doesn't switch to a separate desktop**, so anything running in the background keeps working: remote-control tools, game streaming (Sunshine, Parsec, Moonlight), automation, and AI agents that drive the desktop.
 
 ## Features
 
@@ -14,7 +14,7 @@ IdleVeil shows a screensaver-style animation (Matrix rain, Mystify or plain blac
 - **Respects video playback.** It stays off while a fullscreen app asks Windows to keep the display on.
 - **Per-app exceptions.** Never shows while chosen apps (e.g. a game you watch AFK) are focused.
 - **Hides the mouse cursor** while the animation is showing (optional).
-- **Tray icon** for all settings: animation, idle time, pause, start with Windows.
+- **A settings window** with live previews of every scene, a to-scale map of your monitors, and every option in one place. The tray icon stays small: Show now, Pause, Settings and Exit.
 - **Updates itself** from GitHub releases, with every download checked against the release's SHA-256 checksums.
 - **Tiny and dependency-free:** a ~35 KB exe using the .NET Framework that's already part of Windows 10 and 11.
 
@@ -41,47 +41,79 @@ IdleVeil lives in the system tray (you may need to click the `^` arrow to see it
 
 | Menu item | What it does |
 | --- | --- |
-| **Show now** | Starts the animation right away (double-clicking the icon does the same) |
-| **Animation** | Random, Matrix rain, Mystify, or Blank (black) |
-| **Start after** | Idle time before it appears: 1 to 60 minutes |
-| **Hide cursor** | Hide the mouse pointer while the animation is showing |
-| **Ignore input from apps** | Only real mouse, keyboard and controller input counts (on by default). Turn off if you use remote-control tools that should count as you being here |
-| **Keep screen on for video** | Whether apps asking to keep the display on stop the animation: Fullscreen only (default), Always, or Never |
-| **Turn off monitor** | Pick a monitor to switch off (detach) once the animation has shown for 1 to 60 minutes. The other screens keep the animation |
-| **Don't show while using** | Apps that stop the animation while they're focused. Focus the app, then open this menu and pick **Add** |
-| **Pause for 1 hour / Pause until resumed** | Temporarily stop it from appearing |
-| **Start with Windows** | Turn launching at sign-in on or off |
-| **Install updates automatically** | Download and install new releases from GitHub (on by default). Checked shortly after start, then every 12 hours; installs only while the animation isn't showing |
-| **Check for updates** | Check now, and install if there's a newer version |
-| **About IdleVeil** | Version, and where settings and the log are stored |
+| **Show now** | Starts the animation right away |
+| **Pause** | Stop it from appearing for 30 minutes, 1 hour, 2 hours, or until you resume it |
+| **Settings...** | Opens the settings window (double-clicking the icon does the same) |
 | **Exit** | Quit IdleVeil |
 
 Move the mouse or press any key to dismiss the animation.
+
+### Settings window
+
+![The IdleVeil settings window, Scenes page](docs/settings-window.png)
+
+Everything else is set in the settings window. Changes apply at once (there's no OK button), and the tray menu always matches it. **Preview** at the bottom left shows the real animation with your current settings; move the mouse to end it. Opening Settings again, or running `IdleVeil.exe --settings`, brings the open window to the front.
+
+| Page | What's on it |
+| --- | --- |
+| **Scenes** | Live previews of every scene, grouped into Ambient, Music visualizers, Clocks and Classic (a note marks the scenes that react to sound). Click one to always show it, or pick **Random** and tick which scenes it may choose from. Music visualizers only join Random while something is playing |
+| **Screens** | A to-scale map of your monitors with their names, resolutions and a live preview of what each will show. Choose **Span** (one scene composed across every screen: the map shows the real span picture, and **Clock screen** picks where a span clock sits, by default the largest non-OLED screen), **Each** (its own copy per screen), **Mirror** (the same picture everywhere) or **Per screen**, where clicking a monitor picks its scene. The monitor that gets turned off is marked |
+| **Timing & OLED** | Idle time before it appears; which monitor to turn off (detach) and after how long, so OLEDs can run their pixel refresh; whether apps asking to keep the display on stop it (Fullscreen only, Always, Never); hide cursor; ignore input injected by other apps |
+| **Music** | Which visualizer Music mode shows while sound plays (one, or **Random** from a pool you tick; in Per screen mode each monitor can pick its own) and which clock when it's quiet; the **audio source** it listens to (the default output, the loudest device, or any playback or recording device, with live levels); a live "music detected" meter and a **Test** button (see [docs/music-scenes.md](docs/music-scenes.md)) |
+| **Apps** | Apps that stop the animation while they're in front. Add them from a list of running apps (the app you used last is suggested) |
+| **General** | Start with Windows, the GPU renderer (with its status, or why it fell back to GDI), automatic updates and **Check now**, the log and settings files, and About |
+
+The previews only animate while the window is open and not minimized, and only the ones you can see. They use made-up audio unless something is actually playing.
 
 ### Tip: turn off the Windows screensaver
 
 IdleVeil replaces it. In **Settings > Personalization > Lock screen > Screen saver**, set the screensaver to **(None)**. Otherwise Windows may switch to its own screensaver desktop, which can interrupt remote and streaming tools.
 
+### Tip: Voicemeeter and other audio routing
+
+By default the visualizers listen to Windows' default output. If your music goes through Voicemeeter (or another mixer), that may be the wrong device. Open **Settings > Music > Audio source**, play some music and watch the levels: pick the **Voicemeeter Input** (or AUX Input, VAIO3 Input) your player sends to, or a recording device such as **Voicemeeter Out B1** that carries your mix (often the cleanest). **Auto** follows whichever playback device is loudest. From a terminal, `IdleVeil.exe --audio-test` lists every device with its level.
+
 ## Command-line options
 
-Settings chosen in the tray menu are saved and take priority over these defaults.
+Settings chosen in the settings window are saved and take priority over these defaults.
 
 ```
 IdleVeil.exe [options]
 
   --idle <seconds>             Idle time before the animation starts (default 300)
-  --mode random|matrix|mystify Animation to show (default random)
+  --mode <id>                  Animation to show (default random): random, matrix,
+                               mystify, starfield, aurora, spectrum, fireflies, fire,
+                               snow, life, plasma, clock, clock-led, clock-neon, clock-analog,
+                               clock-music, scope, scopering, radial, tunnel, ripples,
+                               waterfall, ridges, skyline, burst, lissajous, music, blank
+  --screens <m>                Multi-monitor layout for GPU scenes: each (default),
+                               span, mirror, perscreen
   --watch <file>               Treat growth of this file as activity, e.g. a log
                                written by a remote-control server
-  --fps <n>                    Animation frame rate (default 30)
+  --fps <n>                    Frame rate (default 30 for GDI scenes, 60 for GPU)
+  --gdi                        Use the old GDI renderer even for GPU scenes
+  --stats                      Same as --perf-every 5
+  --perf-every <seconds>       Perf log sample period while a veil shows (default 10)
+  --log-console                Mirror the log to the terminal (or a redirected stdout)
+  --debug                      Debug-level logging for this run
+  --render-test <dir>          Render the GPU scenes to PNGs in <dir> and quit
+                               (with --mode, --screens, --frames <n>)
+  --fake-audio                 Drive the music visualizers with synthetic audio
+  --audio-device <id|name>     Audio source for this run: default, auto, an endpoint id
+                               or part of a device name (e.g. "Out B1")
+  --audio-test                 List audio devices with their levels, then log the
+                               chosen device's levels for 5 s
   --preview                    Show the animation once, then quit on input
+  --settings                   Open the settings window (in the running copy, if any)
   --ignore-display-requests    Show even while an app asks to keep the display on
   --count-injected-input       Count input injected by other apps as activity
   --off-monitor <id>           Monitor to turn off, by its EDID id (e.g. AUS2740)
   --off-after <seconds>        How long the animation shows before that monitor
                                is turned off (default 300)
-  --exit                       Tell a running IdleVeil to quit
+  --exit                       Tell a running IdleVeil to quit (with --preview: a running preview)
 ```
+
+Logs: see [docs/logging.md](docs/logging.md).
 
 ## Uninstall
 
@@ -100,7 +132,7 @@ IdleVeil-Setup-1.0.0.exe --silent [--no-autostart]
 | --- | --- |
 | `%LOCALAPPDATA%\Programs\IdleVeil` | `IdleVeil.exe`, `Uninstall.exe` |
 | `%APPDATA%\IdleVeil\IdleVeil.ini` | Your settings |
-| `%APPDATA%\IdleVeil\IdleVeil.log` | Start-up and error log |
+| `%APPDATA%\IdleVeil\logs\` | App, perf and crash logs, one file per day (kept 7 days; see [docs/logging.md](docs/logging.md)) |
 
 ## Building from source
 
@@ -119,7 +151,12 @@ Output goes to `dist\`:
 Project layout:
 
 ```
-src\IdleVeil.cs       the app (tray, idle logic, animations)
+src\IdleVeil.cs       the app (tray, idle logic, window, Matrix rain and Mystify)
+src\Settings\         the settings window (owner-drawn controls, live scene previews)
+src\Savers.cs         the other screensaver scenes (GDI), ported from deckviz
+src\Gpu\              the Direct3D 11 renderer and its scenes (docs/renderer.md)
+src\Audio.cs          WASAPI loopback capture for the music visualizers
+src\PerMonitor.cs     runs one copy of the animation per monitor
 src\PhysicalInput.cs  real vs injected mouse/keyboard input (Raw Input)
 src\Controllers.cs    game controller activity (XInput)
 src\DisplayDetach.cs  turning a monitor off and back on, restoring windows
@@ -135,6 +172,8 @@ The source is limited to C# 5, since that's what the built-in compiler supports.
 - Idle time comes from Raw Input. Injected input (`SendInput`) arrives without a source device, so it's ignored; real devices always have one. With "Ignore input from apps" off, `GetLastInputInfo` is used instead, which sees both. Controllers are polled through XInput.
 - A monitor is turned off by removing it from the display layout with `SetDisplayConfig`, never saving that layout to Windows' display database. The previous layout and window placements are restored on return. It waits until no app has injected input for a minute, so an agent clicking on that monitor isn't disturbed mid-task. If IdleVeil is killed while a monitor is off, the next start brings it back.
 - The overlay is a topmost, layered, click-through (`WS_EX_TRANSPARENT`), non-activating window.
+- Scenes with a GPU version are drawn with Direct3D 11 at native resolution, one flip-model swap chain per monitor shown through DirectComposition, vsynced at 60 fps. If the GPU path can't start, the GDI renderer takes over (the reason is logged). Multi-monitor layout: `screens=` in the ini or the Screens page of the settings window; `scene.<EDID id>=<scene>` picks a scene per monitor in `perscreen` mode. See [docs/renderer.md](docs/renderer.md).
+- GPU ambient scenes: plasma, snow, fire, Game of Life, mystify and matrix rain (`src/Gpu/Scenes/`). Span mode composes every scene across all monitors: fire burns along the real bottom edges, snow falls through stacked screens and piles only on floors, matrix columns run from the top edges down through stacked screens, the spectrum is one wide row, centred scenes avoid the empty corners, and clocks sit whole on one screen with a dim ambient layer on the others. Music visualizers: scope, scope ring, radial, tunnel, ripples, waterfall, ridges, skyline, beat burst and Lissajous.
 - `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` hides it from screen capture (Windows 10 2004 or later).
 - Video playback is detected by checking whether any app has set `ES_DISPLAY_REQUIRED` while a fullscreen (not maximized) window has focus.
 - The cursor is hidden by temporarily swapping the system cursors for blank ones and restoring the user's cursor scheme afterwards (also on start-up, in case of a crash).
