@@ -59,7 +59,7 @@ Everything else is set in the settings window. Changes apply at once (there's no
 | **Scenes** | Live previews of every scene, grouped into Ambient, Music visualizers, Clocks and Classic (a note marks the scenes that react to sound). Click one to always show it, or pick **Random** and tick which scenes it may choose from. Music visualizers only join Random while something is playing |
 | **Screens** | A to-scale map of your monitors with their names, resolutions and a live preview of what each will show. Choose **Span** (one scene composed across every screen: the map shows the real span picture, and **Clock screen** picks where a span clock sits, by default the largest non-OLED screen), **Each** (its own copy per screen), **Mirror** (the same picture everywhere) or **Per screen**, where clicking a monitor picks its scene. The monitor that gets turned off is marked |
 | **Timing & OLED** | Idle time before it appears; which monitor to turn off (detach) and after how long, so OLEDs can run their pixel refresh; whether apps asking to keep the display on stop it (Fullscreen only, Always, Never); hide cursor; ignore input injected by other apps |
-| **Music** | Which visualizer Music mode shows while sound plays (one, or **Random** from a pool you tick; in Per screen mode each monitor can pick its own) and which clock when it's quiet, with a live "music detected" meter and a **Test** button (see [docs/music-scenes.md](docs/music-scenes.md)) |
+| **Music** | Which visualizer Music mode shows while sound plays (one, or **Random** from a pool you tick; in Per screen mode each monitor can pick its own) and which clock when it's quiet; the **audio source** it listens to (the default output, the loudest device, or any playback or recording device, with live levels); a live "music detected" meter and a **Test** button (see [docs/music-scenes.md](docs/music-scenes.md)) |
 | **Apps** | Apps that stop the animation while they're in front. Add them from a list of running apps (the app you used last is suggested) |
 | **General** | Start with Windows, the GPU renderer (with its status, or why it fell back to GDI), automatic updates and **Check now**, the log and settings files, and About |
 
@@ -68,6 +68,10 @@ The previews only animate while the window is open and not minimized, and only t
 ### Tip: turn off the Windows screensaver
 
 IdleVeil replaces it. In **Settings > Personalization > Lock screen > Screen saver**, set the screensaver to **(None)**. Otherwise Windows may switch to its own screensaver desktop, which can interrupt remote and streaming tools.
+
+### Tip: Voicemeeter and other audio routing
+
+By default the visualizers listen to Windows' default output. If your music goes through Voicemeeter (or another mixer), that may be the wrong device. Open **Settings > Music > Audio source**, play some music and watch the levels: pick the **Voicemeeter Input** (or AUX Input, VAIO3 Input) your player sends to, or a recording device such as **Voicemeeter Out B1** that carries your mix (often the cleanest). **Auto** follows whichever playback device is loudest. From a terminal, `IdleVeil.exe --audio-test` lists every device with its level.
 
 ## Command-line options
 
@@ -92,6 +96,10 @@ IdleVeil.exe [options]
   --render-test <dir>          Render the GPU scenes to PNGs in <dir> and quit
                                (with --mode, --screens, --frames <n>)
   --fake-audio                 Drive the music visualizers with synthetic audio
+  --audio-device <id|name>     Audio source for this run: default, auto, an endpoint id
+                               or part of a device name (e.g. "Out B1")
+  --audio-test                 List audio devices with their levels, then log the
+                               chosen device's levels for 5 s
   --preview                    Show the animation once, then quit on input
   --settings                   Open the settings window (in the running copy, if any)
   --ignore-display-requests    Show even while an app asks to keep the display on

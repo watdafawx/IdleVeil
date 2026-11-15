@@ -1,7 +1,9 @@
 // System audio capture for music-reactive scenes.
 //
-// WASAPI loopback of the default render device on a background thread, then an FFT on the render
-// thread: log-spaced bands, a waveform and a "music is playing" detector with hysteresis.
+// WASAPI on a background thread, then an FFT on the render thread: log-spaced bands, a waveform
+// and a "music is playing" detector with hysteresis. Which device is captured (loopback of a
+// playback device, or a recording device directly) follows audiodevice= (AudioDevices.cs); the
+// choice is checked every 2 s, and a lost or invalidated device is reopened, never given up on.
 //
 // The feed is a shared, reference-counted singleton (Acquire/Release) so several scenes or
 // monitors can use the same capture and nothing is recorded while the last user is gone.
@@ -15,7 +17,7 @@ namespace IdleVeil
 {
     static class Wasapi
     {
-        public const int eRender = 0, eMultimedia = 1;
+        public const int eRender = 0, eCapture = 1, eMultimedia = 1;
         public const int CLSCTX_ALL = 0x17;
         public const int AUDCLNT_SHAREMODE_SHARED = 0;
         public const uint AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000;
@@ -56,7 +58,7 @@ namespace IdleVeil
         public interface IMMDeviceEnumerator
         {
             [PreserveSig]
-            int EnumAudioEndpoints(int dataFlow, int stateMask, out IntPtr devices);
+            int EnumAudioEndpoints(int dataFlow, int stateMask, out AudioDevices.IMMDeviceCollection devices);
             [PreserveSig]
             int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice endpoint);
             [PreserveSig]
@@ -74,7 +76,7 @@ namespace IdleVeil
             int Activate(ref Guid iid, int clsCtx, IntPtr activationParams,
                 [MarshalAs(UnmanagedType.IUnknown)] out object iface);
             [PreserveSig]
-            int OpenPropertyStore(int access, out IntPtr store);
+            int OpenPropertyStore(int access, out AudioDevices.IPropertyStore store);
             [PreserveSig]
             int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id);
             [PreserveSig]
@@ -164,6 +166,9 @@ namespace IdleVeil
         public bool Capturing { get { return running && lastDataTick != 0; } }
 
         public int Packets;                   // packets pulled since start (diagnostics)
+        public volatile string DeviceName;   // the device being captured now, null while none
+        public volatile bool DeviceIsCapture;
+        public float Level;                 // raw peak of the last ~40 ms, 0..1 (before any gain)
         public int SampleRate { get; private set; }
 
         readonly object ringLock = new object();
@@ -306,6 +311,9 @@ namespace IdleVeil
             int start = FftSize - WaveCount;
             if (fresh)
             {
+                float framePeak = 0f;
+                for (int i = 0; i < FftSize; i++) framePeak = Math.Max(framePeak, Math.Abs(frame[i]));
+                Level = Math.Min(1f, framePeak);
                 float wavePeak = 0f;
                 for (int i = start; i < FftSize; i++)
                 {
@@ -320,6 +328,7 @@ namespace IdleVeil
             else
             {
                 for (int i = 0; i < WaveCount; i++) s.Wave[i] = 0f;
+                Level = 0f;
             }
 
             // "music is playing": a level above the threshold for ~2 s, quiet for ~2 s to stop
@@ -420,6 +429,8 @@ namespace IdleVeil
             Wasapi.IAudioClient client = null;
             Wasapi.IAudioCaptureClient capture = null;
             string deviceId = null;
+            bool isCapture = false;
+            AutoPicker auto = null;
             int fmtTag = 0, channels = 0, bits = 0;
             float[] fBuf = null;
             short[] sBuf = null;
@@ -444,11 +455,14 @@ namespace IdleVeil
                             }
                             enumeratorObj = new Wasapi.MMDeviceEnumeratorComObject();
                             enumerator = (Wasapi.IMMDeviceEnumerator)enumeratorObj;
+                            AudioTarget target = AudioDevices.Resolve(enumerator, AudioConfig.Effective, auto, null);
+                            if (target == null) throw new InvalidOperationException("no audio device");
                             Wasapi.IMMDevice device;
-                            int hr = enumerator.GetDefaultAudioEndpoint(Wasapi.eRender, Wasapi.eMultimedia, out device);
-                            if (hr != 0 || device == null) throw new InvalidOperationException("no default audio output (0x" + hr.ToString("x8") + ")");
-                            hr = device.GetId(out deviceId);
-                            if (hr != 0) deviceId = "?";
+                            int hr = enumerator.GetDevice(target.Id, out device);
+                            if (hr != 0 || device == null) throw new InvalidOperationException("device " + target.Name + " unavailable (0x" + hr.ToString("x8") + ")");
+                            deviceId = target.Id;
+                            isCapture = target.Capture;
+                            uint streamFlags = isCapture ? 0u : Wasapi.AUDCLNT_STREAMFLAGS_LOOPBACK;
                             Guid iid = Wasapi.IID_IAudioClient;
                             object o;
                             hr = device.Activate(ref iid, Wasapi.CLSCTX_ALL, IntPtr.Zero, out o);
@@ -468,16 +482,14 @@ namespace IdleVeil
                                 int sub = Marshal.ReadInt32(fmtPtr, 24);
                                 fmtTag = sub == 3 ? Wasapi.WAVE_FORMAT_IEEE_FLOAT : Wasapi.WAVE_FORMAT_PCM;
                             }
-                            hr = client.Initialize(Wasapi.AUDCLNT_SHAREMODE_SHARED, Wasapi.AUDCLNT_STREAMFLAGS_LOOPBACK,
-                                0, 0, fmtPtr, IntPtr.Zero);
+                            hr = client.Initialize(Wasapi.AUDCLNT_SHAREMODE_SHARED, streamFlags, 0, 0, fmtPtr, IntPtr.Zero);
                             if (hr != 0)
                             {
                                 // some drivers want an explicit buffer time
-                                hr = client.Initialize(Wasapi.AUDCLNT_SHAREMODE_SHARED, Wasapi.AUDCLNT_STREAMFLAGS_LOOPBACK,
-                                    2000000, 0, fmtPtr, IntPtr.Zero);
+                                hr = client.Initialize(Wasapi.AUDCLNT_SHAREMODE_SHARED, streamFlags, 2000000, 0, fmtPtr, IntPtr.Zero);
                             }
                             Wasapi.CoTaskMemFree(fmtPtr);
-                            if (hr != 0) throw new InvalidOperationException("Initialize(loopback) failed (0x" + hr.ToString("x8") + ")");
+                            if (hr != 0) throw new InvalidOperationException("Initialize(" + (isCapture ? "capture" : "loopback") + ") failed (0x" + hr.ToString("x8") + ")");
                             Guid cid = Wasapi.IID_IAudioCaptureClient;
                             object cap;
                             hr = client.GetService(ref cid, out cap);
@@ -488,12 +500,16 @@ namespace IdleVeil
                             client.Start();
                             BuildBands((int)fmt.nSamplesPerSec);
                             fBuf = null; sBuf = null; iBuf = null; bBuf = null;
-                            Log("audio: capturing loopback of " + deviceId + " (" + channels + "ch "
-                                + fmt.nSamplesPerSec + "Hz " + (fmtTag == Wasapi.WAVE_FORMAT_IEEE_FLOAT ? "float" : bits + "-bit") + ")");
+                            DeviceName = target.Name;
+                            DeviceIsCapture = isCapture;
+                            Log("audio: capturing " + (isCapture ? "recording device " : "loopback of ") + target.Name + " [" + target.Note + "] "
+                                + deviceId + " (" + channels + "ch " + fmt.nSamplesPerSec + "Hz "
+                                + (fmtTag == Wasapi.WAVE_FORMAT_IEEE_FLOAT ? "float" : bits + "-bit") + ")");
                         }
                         catch (Exception ex)
                         {
                             Log("audio: capture unavailable: " + ex.Message);
+                            DeviceName = null;
                             Close(client, capture);
                             client = null; capture = null;
                             if (enumeratorObj != null) { try { Marshal.ReleaseComObject(enumeratorObj); } catch { } enumeratorObj = null; enumerator = null; }
@@ -503,16 +519,24 @@ namespace IdleVeil
                     }
                     try
                     {
-                        // Default output can change at any time (headphones, TV, monitor). Poll it.
+                        // The device to use can change at any time: the default output (headphones,
+                        // TV), the loudest one (auto), the setting, or the chosen device coming back.
+                        if (AudioConfig.Effective == "auto")
+                        {
+                            if (auto == null) auto = new AutoPicker();
+                            auto.Sample();
+                        }
+                        else if (auto != null) { auto.Dispose(); auto = null; }
                         if (Environment.TickCount - lastDeviceCheck > 2000)
                         {
                             lastDeviceCheck = Environment.TickCount;
-                            string now = DefaultDeviceId(enumerator);
-                            if (now != null && now != deviceId)
+                            AudioTarget want = AudioDevices.Resolve(enumerator, AudioConfig.Effective, auto, deviceId);
+                            if (want != null && (want.Id != deviceId || want.Capture != isCapture))
                             {
-                                Log("audio: default output changed, restarting capture");
+                                Program.Log("audio: switching to " + want.Name + " (" + want.Note + ")");
                                 Close(client, capture);
                                 client = null; capture = null;
+                                lastAttempt = 0;
                                 continue;
                             }
                         }
@@ -520,7 +544,8 @@ namespace IdleVeil
                     }
                     catch (Exception ex)
                     {
-                        Log("audio: capture stopped: " + ex.Message);
+                        Log("audio: capture stopped: " + ex.Message + (ex.Message.Contains("88890004") ? " (device invalidated or unplugged, reopening)" : ""));
+                        DeviceName = null;
                         Close(client, capture);
                         client = null; capture = null;
                     }
@@ -533,23 +558,10 @@ namespace IdleVeil
             finally
             {
                 Close(client, capture);
+                if (auto != null) auto.Dispose();
                 if (enumeratorObj != null) { try { Marshal.ReleaseComObject(enumeratorObj); } catch { } }
                 Wasapi.CoUninitialize();
             }
-        }
-
-        static string DefaultDeviceId(Wasapi.IMMDeviceEnumerator e)
-        {
-            try
-            {
-                Wasapi.IMMDevice d;
-                if (e == null || e.GetDefaultAudioEndpoint(Wasapi.eRender, Wasapi.eMultimedia, out d) != 0 || d == null) return null;
-                string id;
-                d.GetId(out id);
-                Marshal.ReleaseComObject(d);
-                return id;
-            }
-            catch { return null; }
         }
 
         static void Close(Wasapi.IAudioClient client, Wasapi.IAudioCaptureClient capture)
@@ -687,26 +699,57 @@ namespace IdleVeil
             return sb.ToString();
         }
 
-        // Diagnostic used by --audio-test: log bands, bass and playing for a few seconds.
+        [DllImport("kernel32.dll")]
+        static extern bool AttachConsole(int pid);
+
+        // Diagnostic used by --audio-test: list every active device with its peak level, then log
+        // bands, bass and playing of the chosen one for a few seconds. Written to the log and to
+        // the console it was started from (or to a redirected stdout).
         public static void AudioTest(int seconds)
         {
+            try { if (!Console.IsOutputRedirected) AttachConsole(-1); } catch { }
+            Action<string> say = delegate(string s)
+            {
+                Program.Log("audio-test: " + s);
+                try { Console.WriteLine(s); } catch { }
+            };
+            say("setting: audiodevice=" + AudioConfig.Effective + (AudioConfig.Override != null ? " (from --audio-device)" : ""));
+            var devices = AudioDevices.List();
+            using (var meters = new AudioMeters(devices))
+            {
+                for (int i = 0; i < 8; i++) { meters.Read(0.02f); Thread.Sleep(25); }
+                bool? group = null;
+                for (int i = 0; i < devices.Count; i++)
+                {
+                    AudioDevice d = devices[i];
+                    if (group != d.Capture) { group = d.Capture; say(d.Capture ? "recording devices (captured directly):" : "playback devices (captured as loopback):"); }
+                    say("  " + (d.IsDefault ? "* " : "  ") + d.Name + "  peak=" + meters.Levels[i].ToString("0.000") + "  " + d.Id);
+                }
+            }
             AudioFeed feed = Acquire();
             try
             {
-                Program.Log("audio-test: start (" + seconds + "s)");
+                say("listening for " + seconds + " s");
                 int end = Environment.TickCount + seconds * 1000;
                 int nextLog = 0;
+                string shown = null;
                 while ((int)(end - Environment.TickCount) > 0)
                 {
                     feed.Update();
+                    string name = feed.DeviceName;
+                    if (name != null && name != shown)
+                    {
+                        shown = name;
+                        say("device: " + name + (feed.DeviceIsCapture ? " (recording)" : " (loopback)"));
+                    }
                     if (Environment.TickCount >= nextLog)
                     {
                         nextLog = Environment.TickCount + 500;
-                        Program.Log("audio-test: " + feed.StatsText());
+                        say("level=" + feed.Level.ToString("0.000") + " " + feed.StatsText());
                     }
                     Thread.Sleep(100);
                 }
-                Program.Log("audio-test: done");
+                say("done");
             }
             finally
             {

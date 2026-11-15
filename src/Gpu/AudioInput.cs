@@ -37,6 +37,8 @@ namespace IdleVeil
     {
         AudioFeed feed = AudioFeed.Acquire();
 
+        public AudioFeed Feed { get { return feed; } }
+
         public bool Read(float[] bands, float[] wave)
         {
             if (feed == null) return false;

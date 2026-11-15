@@ -147,19 +147,11 @@ namespace IdleVeil
         }
     }
 
-    // Asks the default output device's peak meter whether anything is making sound. This works
-    // without opening a capture stream, so it can run at the moment the veil is about to show.
+    // Asks the peak meter of the device music mode listens to (audiodevice=, see AudioDevices.cs)
+    // whether anything is making sound. This works without opening a capture stream, so it can
+    // run at the moment the veil is about to show. auto: any playback device counts.
     static class SoundProbe
     {
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064")]
-        interface IAudioMeterInformation
-        {
-            [PreserveSig] int GetPeakValue(out float peak);
-            [PreserveSig] int GetMeteringChannelCount(out uint count);
-            [PreserveSig] int GetChannelsPeakValues(uint count, IntPtr peaks);
-            [PreserveSig] int QueryHardwareSupport(out uint mask);
-        }
-
         static int checkedAt;
         static bool last;
 
@@ -178,21 +170,26 @@ namespace IdleVeil
 
         static bool Measure()
         {
-            object enumObj = null, meterObj = null;
-            Wasapi.IMMDevice dev = null;
+            Wasapi.IMMDeviceEnumerator e = null;
+            var meters = new List<AudioDevices.IAudioMeterInformation>();
             try
             {
-                enumObj = new Wasapi.MMDeviceEnumeratorComObject();
-                var e = (Wasapi.IMMDeviceEnumerator)enumObj;
-                if (e.GetDefaultAudioEndpoint(Wasapi.eRender, Wasapi.eMultimedia, out dev) != 0 || dev == null) return false;
-                Guid iid = typeof(IAudioMeterInformation).GUID;
-                if (dev.Activate(ref iid, Wasapi.CLSCTX_ALL, IntPtr.Zero, out meterObj) != 0 || meterObj == null) return false;
-                var meter = (IAudioMeterInformation)meterObj;
+                e = AudioDevices.NewEnumerator();
+                string spec = AudioConfig.Effective;
+                if (spec == "auto")
+                {
+                    foreach (AudioDevice d in AudioDevices.List())
+                        if (!d.Capture) meters.Add(AudioDevices.Meter(e, d.Id));
+                }
+                else
+                {
+                    AudioTarget t = AudioDevices.Resolve(e, spec, null, null);
+                    if (t != null) meters.Add(AudioDevices.Meter(e, t.Id));
+                }
                 float peak = 0f;
                 for (int i = 0; i < 8; i++)   // music has gaps: look at 8 moments over ~160 ms
                 {
-                    float p;
-                    if (meter.GetPeakValue(out p) == 0 && p > peak) peak = p;
+                    foreach (var m in meters) peak = Math.Max(peak, AudioDevices.Peak(m));
                     Thread.Sleep(20);
                 }
                 return peak > 0.003f;
@@ -204,9 +201,8 @@ namespace IdleVeil
             }
             finally
             {
-                if (meterObj != null) try { Marshal.ReleaseComObject(meterObj); } catch { }
-                if (dev != null) try { Marshal.ReleaseComObject(dev); } catch { }
-                if (enumObj != null) try { Marshal.ReleaseComObject(enumObj); } catch { }
+                foreach (var m in meters) if (m != null) try { Marshal.ReleaseComObject(m); } catch { }
+                if (e != null) try { Marshal.ReleaseComObject(e); } catch { }
             }
         }
     }

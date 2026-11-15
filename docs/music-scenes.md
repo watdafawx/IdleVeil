@@ -31,6 +31,8 @@ covers what is specific to these scenes.
   `SegClockScene` (a `TextBatch` 7-segment clock with style hooks). `clock`, `clock-neon` and
   `clock-music` are small subclasses of it; `clock-led` and `clock-analog` are their own shaders.
 - `src/Gpu/Scenes/MusicScene.cs`: the `music` crossfade.
+- `src/AudioDevices.cs`: device list (friendly names), peak meters, `AudioConfig` (`audiodevice=`),
+  the auto picker and the resolver `src/Audio.cs` asks every 2 s which device to capture.
 - `src/Gpu/MusicSupport.cs`: `MusicConfig` (settings, labels, GDI fallback, random picks) and
   `SoundProbe`.
 - `src/Settings/`: the settings window's Music page and the live scene previews (`Thumbnails.cs`).
@@ -66,8 +68,9 @@ can have its own visualizer.
 (`e = smoothstep(vizMix)`, easing over 2 s). Any scene can be the visualizer, including future ports.
 `AudioFrame.Playing` already has a 2 s hysteresis, so the gap between two tracks does not flip it.
 
-**Random must not pick audio scenes in silence.** `SoundProbe` reads the default output device's
-peak meter (`IAudioMeterInformation`, 8 samples over about 160 ms, cached for 1.5 s). It does not open
+**Random must not pick audio scenes in silence.** `SoundProbe` reads the peak meter
+(`IAudioMeterInformation`) of the audio source (`audiodevice=`; with `auto`, of every playback
+device): 8 samples over about 160 ms, cached for 1.5 s. It does not open
 a capture stream, so it is safe to call at the moment the veil is about to appear. `MusicConfig.Pick`
 (Random with the default pool; a custom pool goes through `SceneCatalog.Pick`, same rule) and `MusicConfig.RandomGpu` (per-screen mode) only add audio-reactive ids when
 it says something is playing. A random `clock` pick becomes a random clock style.
@@ -84,10 +87,19 @@ Settings window, **Music** page:
 2. In per-screen mode, one drop-down per monitor: "Same as above", "Random from pool" or a
    visualizer.
 3. "When it's quiet": the five clock cards.
-4. A live "music detected" meter on top, and under "Try it" a **Test** button that shows the real veil in music mode.
+4. "Audio source": Default output, Auto (the loudest playback device), or any playback device
+   (captured as loopback) or recording device (captured directly, e.g. Voicemeeter Out B1), with
+   the level of the device being captured, the loudest devices right now (click one to use it),
+   and a Refresh button (the list also updates by itself every 3 s).
+5. A live "music detected" meter on top, and under "Try it" a **Test** button that shows the real veil in music mode.
 
 Stored in IdleVeil.ini as `musicviz=<id>|random`, `musicpool=<id>,<id>,...`,
-`musicviz.<EDID key>=<id>|random` (per-screen) and `musicclock=<id>`; unknown values are ignored.
+`musicviz.<EDID key>=<id>|random` (per-screen), `musicclock=<id>` and
+`audiodevice=default|auto|<endpoint id>`; unknown values are ignored. A chosen device that is
+missing falls back to the default output (logged) and is picked up again when it returns; a
+capture that fails (`AUDCLNT_E_DEVICE_INVALIDATED`, unplugged) is reopened after 3 s.
+`--audio-test` lists all devices with their levels; `--audio-device <id|name part>` overrides the
+setting for one run.
 
 ## Testing
 

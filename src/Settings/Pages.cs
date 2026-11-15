@@ -802,10 +802,11 @@ namespace IdleVeil
         public override void Build(Layout l)
         {
             cards.Clear();
-            l.Text("Music mode shows a visualizer while something is playing and a clock when it's quiet. It listens to your default speakers or headphones (nothing is recorded or sent anywhere).", Ui.TextSecondary);
+            l.Text("Music mode shows a visualizer while something is playing and a clock when it's quiet. It listens to the audio source below (nothing is recorded or sent anywhere).", Ui.TextSecondary);
             l.Gap(12);
             meter = l.Add(new MusicMeter(), UI.S(84));
             l.Gap(4);
+            BuildSource(l);
 
             bool random = MusicConfig.Viz == "random";
             if (!random) lastViz = MusicConfig.Viz;
@@ -899,6 +900,61 @@ namespace IdleVeil
             l.Y += cardH;
         }
 
+        // Audio source: Default, Auto, or one playback / recording device, with live levels so the
+        // device that really carries the music is easy to spot (Voicemeeter has many).
+        void BuildSource(Layout l)
+        {
+            if (devices == null) LoadDevices();
+            string def = null;
+            foreach (AudioDevice d in devices) if (d.IsDefault && !d.Capture) def = d.Name;
+            var values = new List<string> { "default", "auto" };
+            var labels = new List<string> { "Default output" + (def != null ? " (" + def + ")" : ""), "Auto (the loudest playback device)" };
+            bool known = AudioConfig.Device == "default" || AudioConfig.Device == "auto";
+            for (int pass = 0; pass < 2; pass++)
+            {
+                bool cap = pass == 1;
+                bool any = false;
+                foreach (AudioDevice d in devices)
+                {
+                    if (d.Capture != cap) continue;
+                    if (!any) { values.Add(null); labels.Add(cap ? "Recording devices" : "Playback devices"); any = true; }
+                    values.Add(d.Id);
+                    labels.Add(d.Name);
+                    if (string.Equals(d.Id, AudioConfig.Device, StringComparison.OrdinalIgnoreCase)) known = true;
+                }
+            }
+            if (!known) { values.Add(AudioConfig.Device); labels.Add("Saved device (not connected)"); }
+            l.Header("Audio source");
+            l.Row(Glyphs.Speaker, "Listen to",
+                  "Default follows Windows' default output. A recording device (e.g. Voicemeeter Out B1) is captured directly; a playback device as what it plays.",
+                  new DropDown(values.ToArray(), labels.ToArray(), AudioConfig.Device, delegate(string v) { AudioConfig.Device = v; Changed(); }) { MinWidth = 280 });
+            levels = l.Add(new DeviceLevels(this), DeviceLevels.Height(UI));
+            l.Gap(4);
+            l.Row(Glyphs.Update, "Devices", devices.Count + " active. The list updates by itself when a device is added or removed.",
+                  new PushButton(Glyphs.Update, "Refresh", false, delegate { LoadDevices(); Window.QueueRebuild(); }));
+        }
+
+        List<AudioDevice> devices;
+        AudioMeters meters;
+        DeviceLevels levels;
+        string signature;
+        int signatureAt;
+
+        void LoadDevices()
+        {
+            if (meters != null) meters.Dispose();
+            devices = AudioDevices.List();
+            meters = new AudioMeters(devices);
+            signature = AudioDevices.Signature();
+            signatureAt = Environment.TickCount;
+        }
+
+        public void UseDevice(string id) { AudioConfig.Device = id; Changed(); }
+
+        // What DeviceLevels draws: the device being captured and the loudest ones right now.
+        public AudioFeed Feed { get { return audio != null ? audio.Feed : null; } }
+        public AudioMeters Meters { get { return meters; } }
+
         void TogglePool(string id)
         {
             if (MusicConfig.Pool == null) MusicConfig.Pool = new List<string>(MusicConfig.Visualizers);
@@ -909,12 +965,15 @@ namespace IdleVeil
         public override void Shown()
         {
             if (audio == null) audio = new LoopbackAudio();
+            if (devices == null) LoadDevices();
             Scrolled();
         }
 
         public override void Hidden()
         {
             if (audio != null) { audio.Dispose(); audio = null; }
+            if (meters != null) { meters.Dispose(); meters = null; }
+            devices = null;
             Window.Thumbs.Want(this, null);
         }
 
@@ -925,6 +984,97 @@ namespace IdleVeil
             if (audio == null || meter == null) return;
             meter.Playing = audio.Read(meter.Bands, meter.Wave);
             meter.Invalidate();
+            if (meters != null) meters.Read(0.1f);
+            if (levels != null) levels.Invalidate();
+            // Devices plugged in or removed: rebuild the list (cheap: ids only, every 3 s).
+            if (devices != null && Environment.TickCount - signatureAt > 3000)
+            {
+                signatureAt = Environment.TickCount;
+                string now = AudioDevices.Signature();
+                if (now != signature) { LoadDevices(); Window.QueueRebuild(); }
+            }
+        }
+    }
+
+    // The device music mode hears now with its level, then the loudest devices at the moment;
+    // click one to listen to it.
+    sealed class DeviceLevels : Widget
+    {
+        const int Rows = 5;
+        readonly MusicPage page;
+        readonly int[] shown = new int[Rows];
+        int count, sortedAt;
+
+        public DeviceLevels(MusicPage page) { this.page = page; }
+
+        public static int Height(Ui ui) { return ui.S(16 + 30 + 22 + Rows * 26 + 12); }
+
+        public override bool Interactive { get { return true; } }
+
+        int RowTop(Ui ui, int i) { return Bounds.Y + ui.S(16 + 30 + 22) + i * ui.S(26); }
+
+        // Peak 0..1 shown on a dB scale (-60..0 dB), so quiet sources still move.
+        static float Db(float p) { return p <= 0.001f ? 0f : Math.Min(1f, (float)(20.0 * Math.Log10(p) + 60.0) / 60f); }
+
+        float feedShown;   // VU-style: instant rise, slow fall
+
+        void Bar(Graphics g, Ui ui, Rectangle r, float v, Color c)
+        {
+            ui.Fill(g, r, ui.SF(2), Color.FromArgb(58, 58, 58));
+            int w = (int)(r.Width * v);
+            if (w > 1) ui.Fill(g, new Rectangle(r.X, r.Y, w, r.Height), ui.SF(2), c);
+        }
+
+        public override void Paint(Graphics g, Ui ui)
+        {
+            ui.DrawCard(g, Bounds, Ui.Card);
+            int x = Bounds.X + ui.S(20), right = Bounds.Right - ui.S(20);
+            int barW = Math.Min(ui.S(260), (right - x) / 2), barX = right - barW;
+            AudioFeed feed = page.Feed;
+            string name = feed != null ? feed.DeviceName : null;
+            float lv = feed != null && name != null ? Db(feed.Level) : 0f;
+            feedShown = lv > feedShown ? lv : Math.Max(lv, feedShown - 0.03f);
+            ui.Line(g, "Listening to", ui.Caption, Ui.TextSecondary, new Rectangle(x, Bounds.Y + ui.S(16), ui.S(100), ui.S(30)));
+            ui.Line(g, name ?? "Waiting for the device…", ui.BodyStrong, Ui.Text, new Rectangle(x + ui.S(100), Bounds.Y + ui.S(16), barX - x - ui.S(112), ui.S(30)));
+            Bar(g, ui, new Rectangle(barX, Bounds.Y + ui.S(16 + 11), barW, ui.S(8)), feedShown, ui.Accent);
+            ui.Line(g, "Loudest devices right now (click one to use it)", ui.Caption, Ui.TextTertiary,
+                    new Rectangle(x, Bounds.Y + ui.S(16 + 30), right - x, ui.S(22)));
+
+            AudioMeters m = page.Meters;
+            if (m == null) return;
+            // Re-rank every few seconds, so the rows do not jump under the mouse.
+            if (count == 0 || Environment.TickCount - sortedAt > 2500)
+            {
+                sortedAt = Environment.TickCount;
+                var order = new List<int>();
+                for (int i = 0; i < m.Devices.Count; i++) order.Add(i);
+                order.Sort(delegate(int a, int b) { return m.Levels[b].CompareTo(m.Levels[a]); });
+                count = Math.Min(Rows, order.Count);
+                for (int i = 0; i < count; i++) shown[i] = order[i];
+            }
+            for (int r = 0; r < count; r++)
+            {
+                int i = shown[r];
+                if (i >= m.Devices.Count) continue;
+                AudioDevice d = m.Devices[i];
+                int y = RowTop(ui, r);
+                bool chosen = string.Equals(d.Id, AudioConfig.Device, StringComparison.OrdinalIgnoreCase);
+                if (chosen) ui.Glyph(g, Glyphs.Check, ui.IconSmall, ui.Accent, new Rectangle(x - ui.S(4), y, ui.S(18), ui.S(26)));
+                ui.Line(g, d.Name + (d.Capture ? "  · recording" : ""), ui.Body, chosen ? Ui.Text : Ui.TextSecondary,
+                        new Rectangle(x + ui.S(18), y, barX - x - ui.S(30), ui.S(26)));
+                Bar(g, ui, new Rectangle(barX, y + ui.S(10), barW, ui.S(6)), Db(m.Levels[i]), Ui.Good);
+            }
+        }
+
+        public override void Click(Point p)
+        {
+            AudioMeters m = page.Meters;
+            if (m == null) return;
+            for (int r = 0; r < count; r++)
+            {
+                int y = RowTop(UI, r);
+                if (p.Y >= y && p.Y < y + UI.S(26) && shown[r] < m.Devices.Count) { page.UseDevice(m.Devices[shown[r]].Id); return; }
+            }
         }
     }
 

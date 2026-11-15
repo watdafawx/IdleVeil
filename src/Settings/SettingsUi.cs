@@ -674,6 +674,13 @@ namespace IdleVeil
             for (int i = 0; i < Values.Length; i++)
             {
                 string v = Values[i];
+                if (v == null)
+                {
+                    // A group header: a separator and a greyed caption, not selectable.
+                    if (menu.Items.Count > 0) menu.Items.Add(new ToolStripSeparator());
+                    menu.Items.Add(new ToolStripMenuItem(Labels[i]) { Enabled = false });
+                    continue;
+                }
                 var item = new ToolStripMenuItem(Labels[i], null, delegate { if (v != Selected) { Selected = v; Invalidate(); Changed(v); } });
                 item.Checked = v == Selected;
                 menu.Items.Add(item);

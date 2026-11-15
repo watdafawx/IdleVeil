@@ -244,7 +244,7 @@ namespace IdleVeil
         public bool AfterUpdate;                  // started by the updater; wait for the old copy to quit
         public bool Debug;                        // log idle state every 10 s
         public int OffAfterSeconds = 300;         // how long after the veil appears
-        public bool AudioTest;                    // --audio-test: log loopback levels for 5 s
+        public bool AudioTest;                    // --audio-test: list audio devices, then levels of the chosen one for 5 s
         public List<string> RandomPool;           // scenes Random may pick; null = the default set (SceneCatalog)
         public bool OpenSettings;                 // --settings: open the settings window (in the running copy if there is one)
         public bool Exit;
@@ -267,6 +267,7 @@ namespace IdleVeil
                     else if (k == "renderer") ForceGdi = v.ToLowerInvariant() == "gdi";
                     else if (k == "musicviz" || k == "musicclock" || k == "musicpool" || k.StartsWith("musicviz.")) MusicConfig.Set(line.Substring(0, eq).Trim(), v);
                     else if (k == "clockscreen") SpanConfig.Set(k, v);
+                    else if (k == "audiodevice") AudioConfig.Set(v);
                     else if (k.StartsWith("scene.") && v != "") SceneFor[line.Substring(0, eq).Trim().Substring(6)] = v.ToLowerInvariant();
                     else if (k == "idle") IdleSeconds = int.Parse(v);
                     else if (k == "hidecursor") HideCursor = v == "1" || v.ToLowerInvariant() == "true";
@@ -296,7 +297,7 @@ namespace IdleVeil
                     "ignoreinjected=" + (IgnoreInjected ? "1" : "0"), "keeponfor=" + KeepOnFor,
                     "offmonitor=" + OffMonitor, "offafter=" + OffAfterSeconds, "noveilapps=" + string.Join(",", NoVeilApps.ToArray()), "autoupdate=" + (AutoUpdate ? "1" : "0"),
                     "debug=" + (Debug ? "1" : "0"), "screens=" + Screens, "renderer=" + (ForceGdi ? "gdi" : "gpu"),
-                    "musicviz=" + MusicConfig.Viz, "musicclock=" + MusicConfig.Clock, "clockscreen=" + SpanConfig.ClockScreen };
+                    "musicviz=" + MusicConfig.Viz, "musicclock=" + MusicConfig.Clock, "clockscreen=" + SpanConfig.ClockScreen, "audiodevice=" + AudioConfig.Device };
                 MusicConfig.SaveExtra(lines);
                 if (RandomPool != null) lines.Add("randompool=" + string.Join(",", RandomPool.ToArray()));
                 foreach (var kv in SceneFor) lines.Add("scene." + kv.Key + "=" + kv.Value);
@@ -328,6 +329,7 @@ namespace IdleVeil
                 else if (k == "--off-after") { o.OffAfterSeconds = int.Parse(v); i++; }
                 else if (k == "--stats") SaverForm.Stats = true;
                 else if (k == "--audio-test") o.AudioTest = true;
+                else if (k == "--audio-device") { AudioConfig.Override = AudioConfig.Normalize(v); i++; }
                 else if (k == "--fake-audio") AudioInput.Synthetic = true;
                 else if (k == "--exit") o.Exit = true;
                 else if (k == "--settings") o.OpenSettings = true;
@@ -378,6 +380,7 @@ namespace IdleVeil
             var opt = Options.Parse(args);
             if (opt.AudioTest)
             {
+                opt.LoadSettings();
                 AudioFeed.AudioTest(5);
                 return;
             }
