@@ -127,12 +127,8 @@ namespace IdleVeil
             Color back = Hot && OnClick != null ? (Pressed ? Ui.CardPressed : Ui.CardHover) : Ui.Card;
             ui.Fill(g, Bounds, ui.SF(8), back);
             ui.Border(g, Bounds, ui.SF(8), Selected ? ui.Accent : Ui.CardBorder, Selected ? ui.SF(2) : 1f);
-            int inset = ui.S(4);
-            var tr = new Rectangle(Bounds.X + inset, Bounds.Y + inset, Thumb != null ? Thumb.W : Bounds.Width - inset * 2,
-                                   Thumb != null ? Thumb.H : (Bounds.Width - inset * 2) * 9 / 16);
+            Rectangle tr = ThumbRect(ui);
             DrawThumb(g, ui, Thumb, tr, back);
-            if (Dim)
-                using (var b = new SolidBrush(Color.FromArgb(150, 24, 24, 24))) g.FillRectangle(b, tr);
             ui.MaskCorners(g, tr, ui.SF(5), back);
             if (Selected)
             {
@@ -175,16 +171,39 @@ namespace IdleVeil
             else ui.Line(g, Label, Compact ? ui.Caption : ui.Body, fg, new Rectangle(row.X, row.Y, right - row.X, row.Height));
         }
 
+        public Rectangle ThumbRect(Ui ui)
+        {
+            int inset = ui.S(4);
+            return new Rectangle(Bounds.X + inset, Bounds.Y + inset,
+                                 Thumb != null ? Thumb.W : Bounds.Width - inset * 2,
+                                 Thumb != null ? Thumb.H : (Bounds.Width - inset * 2) * 9 / 16);
+        }
+
+        // The live picture, over the cached card. Clipped to the image's rounded corners, and the
+        // dim veil for unticked scenes is drawn here too (it is over the picture, not under it).
+        public override void PaintLive(Graphics g, Ui ui)
+        {
+            if (Thumb == null) return;
+            Rectangle tr = ThumbRect(ui);
+            if (Thumb.Id != "blank" && !ui.Caching)
+            {
+                using (GraphicsPath path = Ui.Round(tr, ui.SF(5)))
+                {
+                    Region old = g.Clip;
+                    g.SetClip(path, CombineMode.Intersect);
+                    try { Thumb.Draw(g, tr); }
+                    finally { g.Clip = old; old.Dispose(); }
+                }
+            }
+            if (Dim) ui.Fill(g, tr, ui.SF(5), Color.FromArgb(150, 24, 24, 24));
+        }
+
         // The live frame, or a placeholder while it starts (and black for "blank").
         public static void DrawThumb(Graphics g, Ui ui, Thumb t, Rectangle r, Color back)
         {
-            Bitmap img = t == null || t.Id == "blank" ? null : t.Image;
-            if (img != null)
+            if (t != null && t.Id != "blank" && !ui.Caching)
             {
-                g.InterpolationMode = img.Width == r.Width && img.Height == r.Height ? InterpolationMode.NearestNeighbor : InterpolationMode.Bilinear;
-                g.PixelOffsetMode = PixelOffsetMode.Half;
-                g.DrawImage(img, r);
-                return;
+                if (t.Draw(g, r)) return;
             }
             using (var b = new SolidBrush(t != null && t.Id == "blank" ? Color.Black : Color.FromArgb(18, 18, 18))) g.FillRectangle(b, r);
             if (t == null) return;
@@ -370,6 +389,9 @@ namespace IdleVeil
 
         public MonitorMap(ScreensPage page, GpuScreen[] screens) { this.page = page; Screens = screens; }
 
+        // The map redraws its own pictures every frame, so it is painted live rather than cached.
+        public override bool Dynamic { get { return true; } }
+
         bool PerScreen { get { return ScreenModes.Parse(page.Window.Host.Options.Screens) == ScreenMode.PerScreen && !page.Window.Host.Options.ForceGdi; } }
         public override bool Interactive { get { return PerScreen; } }
 
@@ -460,11 +482,9 @@ namespace IdleVeil
                 string scene = page.SceneOf(s, false);
                 if (spanThumb != null)
                 {
-                    Bitmap img = spanThumb.Image;
-                    g.InterpolationMode = InterpolationMode.NearestNeighbor;
-                    g.PixelOffsetMode = PixelOffsetMode.Half;
-                    if (img != null) g.DrawImage(img, inner, new Rectangle(inner.X - spanOrigin.X, inner.Y - spanOrigin.Y, inner.Width, inner.Height), GraphicsUnit.Pixel);
-                    else using (var b = new SolidBrush(Color.Black)) g.FillRectangle(b, inner);
+                    var src = new Rectangle(inner.X - spanOrigin.X, inner.Y - spanOrigin.Y, inner.Width, inner.Height);
+                    if (!spanThumb.Draw(g, inner, src))
+                        using (var b = new SolidBrush(Color.Black)) g.FillRectangle(b, inner);
                 }
                 else if (thumbs[i] != null) SceneCard.DrawThumb(g, ui, thumbs[i], inner, Color.Black);
                 else
@@ -984,7 +1004,7 @@ namespace IdleVeil
             if (audio == null || meter == null) return;
             meter.Playing = audio.Read(meter.Bands, meter.Wave);
             meter.Invalidate();
-            if (meters != null) meters.Read(0.1f);
+            if (meters != null) meters.Read(1f / 30f);
             if (levels != null) levels.Invalidate();
             // Devices plugged in or removed: rebuild the list (cheap: ids only, every 3 s).
             if (devices != null && Environment.TickCount - signatureAt > 3000)
@@ -1006,6 +1026,8 @@ namespace IdleVeil
         int count, sortedAt;
 
         public DeviceLevels(MusicPage page) { this.page = page; }
+
+        public override bool Dynamic { get { return true; } }
 
         public static int Height(Ui ui) { return ui.S(16 + 30 + 22 + Rows * 26 + 12); }
 
@@ -1033,7 +1055,7 @@ namespace IdleVeil
             AudioFeed feed = page.Feed;
             string name = feed != null ? feed.DeviceName : null;
             float lv = feed != null && name != null ? Db(feed.Level) : 0f;
-            feedShown = lv > feedShown ? lv : Math.Max(lv, feedShown - 0.03f);
+            feedShown = lv > feedShown ? lv : Math.Max(lv, feedShown - 0.012f);
             ui.Line(g, "Listening to", ui.Caption, Ui.TextSecondary, new Rectangle(x, Bounds.Y + ui.S(16), ui.S(100), ui.S(30)));
             ui.Line(g, name ?? "Waiting for the device…", ui.BodyStrong, Ui.Text, new Rectangle(x + ui.S(100), Bounds.Y + ui.S(16), barX - x - ui.S(112), ui.S(30)));
             Bar(g, ui, new Rectangle(barX, Bounds.Y + ui.S(16 + 11), barW, ui.S(8)), feedShown, ui.Accent);
@@ -1084,6 +1106,8 @@ namespace IdleVeil
         public readonly float[] Bands = new float[AudioFrame.BandCount];
         public readonly float[] Wave = new float[AudioFrame.WaveCount];
         public bool Playing;
+
+        public override bool Dynamic { get { return true; } }
 
         public override void Paint(Graphics g, Ui ui)
         {

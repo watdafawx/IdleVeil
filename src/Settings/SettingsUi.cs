@@ -9,6 +9,7 @@
 // window re-lays itself out at a new scale when it moves to a monitor with a different DPI.
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
@@ -48,6 +49,10 @@ namespace IdleVeil
     sealed class Ui
     {
         public float Scale = 1f;
+
+        // True while a page is being painted into its static cache: widgets skip the parts that
+        // change every frame (live thumbnails), which are drawn over the cache afterwards.
+        public bool Caching;
 
         // Windows 11 dark palette.
         public static readonly Color Window = Color.FromArgb(32, 32, 32);
@@ -241,7 +246,15 @@ namespace IdleVeil
         public bool Enabled = true;
 
         public virtual bool Interactive { get { return false; } }
+
+        // A widget that changes on its own (a meter, the monitor map) is painted live, not cached.
+        public virtual bool Dynamic { get { return false; } }
+
         public abstract void Paint(Graphics g, Ui ui);
+
+        // The part of an otherwise cached widget that changes every frame (a live thumbnail).
+        public virtual void PaintLive(Graphics g, Ui ui) { }
+
         public virtual void Click(Point p) { }
         public virtual void MouseMove(Point p) { }
         public virtual void MouseLeave() { }
@@ -249,24 +262,62 @@ namespace IdleVeil
         // The widget under p (content coordinates) that should get the mouse, or null.
         public virtual Widget Hit(Point p) { return Interactive && Enabled && Bounds.Contains(p) ? this : null; }
 
-        public void Invalidate() { if (Surface != null) Surface.InvalidateContent(Bounds); }
+        // A state change (hover, selection): repaint the cached pixels too.
+        public void Invalidate()
+        {
+            if (Surface == null) return;
+            if (Dynamic) Surface.InvalidateLiveContent(Bounds);
+            else Surface.InvalidateContent(Bounds);
+        }
+
+        // A new live frame only: the static cache is still right.
+        public void InvalidateLive() { if (Surface != null) Surface.InvalidateLiveContent(Bounds); }
 
         protected Ui UI { get { return Surface.Ui; } }
     }
 
     // A scrollable canvas of widgets. Widgets are laid out in content coordinates; the surface
     // scrolls them by `Scroll` pixels and draws a thin Windows 11 style scroll bar on the right.
+    //
+    // Painting: the whole page is drawn once into a bitmap ("the cache"); a paint is then a blit
+    // of the visible slice plus the few live parts (thumbnails, meters). Hover and clicks repaint
+    // only their own region of the cache. That is what keeps scrolling and live previews at
+    // display rate: hand-drawn GDI+ text costs ~0.25 ms per line, far too much to redo per frame.
     sealed class Surface : Control
     {
         public readonly Ui Ui;
         public readonly List<Widget> Widgets = new List<Widget>();
         public Color Back = Ui.Window;
         public int ContentHeight;
-        int scroll;
+        int scroll, target;
         Widget hot, pressed;
         bool dragBar, barHot;
         int dragStartY, dragStartScroll;
         public event EventHandler Scrolled;
+
+        Bitmap[] bands;          // the page, split into horizontal strips (see PaintCache)
+        int cacheW, cacheH;
+        bool cacheFull = true;
+        readonly List<Rectangle> dirty = new List<Rectangle>();
+        Timer glide;
+
+        // GDI text costs time proportional to the bitmap it draws into (every DrawText locks the
+        // whole DIB). Strips keep each one small, so a full repaint stays in single-digit ms.
+        const int BandHeight = 320;
+
+        // Paint stats for the perf log (see SettingsWindow.LogPerf).
+        int paints, rebuilds;
+        double paintTotal;
+        float paintMax;
+
+        public void TakeStats(out int n, out float avg, out float max, out int rebuildsDone)
+        {
+            n = paints;
+            avg = paints == 0 ? 0f : (float)(paintTotal / paints);
+            max = paintMax;
+            rebuildsDone = rebuilds;
+            paints = 0; paintTotal = 0; paintMax = 0; rebuilds = 0;
+        }
 
         public Surface(Ui ui)
         {
@@ -275,17 +326,57 @@ namespace IdleVeil
                      | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
         }
 
+        int Clamp(int v) { return Math.Max(0, Math.Min(Math.Max(0, ContentHeight - Height), v)); }
+
         public int Scroll
         {
             get { return scroll; }
             set
             {
-                int v = Math.Max(0, Math.Min(Math.Max(0, ContentHeight - Height), value));
-                if (v == scroll) return;
+                int v = Clamp(value);
+                if (v == scroll)
+                {
+                    target = v;
+                    if (glide != null) glide.Stop();
+                    return;
+                }
                 scroll = v;
+                target = v;
+                if (glide != null) glide.Stop();
                 Invalidate();
                 if (Scrolled != null) Scrolled(this, EventArgs.Empty);
             }
+        }
+
+        // Where the wheel is heading: the glide timer eases `Scroll` towards it, a frame at a time.
+        public int TargetScroll
+        {
+            get { return target; }
+            set
+            {
+                int v = Clamp(value);
+                if (v == target) return;
+                target = v;
+                if (v == scroll) return;
+                if (glide == null)
+                {
+                    glide = new Timer { Interval = 15 };
+                    glide.Tick += delegate { Step(); };
+                }
+                if (!glide.Enabled) glide.Start();
+            }
+        }
+
+        void Step()
+        {
+            if (scroll == target) { glide.Stop(); return; }
+            int d = target - scroll;
+            int step = (int)(d * 0.34f);
+            if (step == 0) step = d > 0 ? 1 : -1;
+            scroll = Math.Abs(d) <= 2 ? target : Clamp(scroll + step);
+            Invalidate();
+            if (Scrolled != null) Scrolled(this, EventArgs.Empty);
+            if (scroll == target) glide.Stop();
         }
 
         public Rectangle Viewport { get { return new Rectangle(0, scroll, Width, Height); } }
@@ -296,11 +387,61 @@ namespace IdleVeil
             foreach (Widget w in list) { w.Surface = this; Widgets.Add(w); }
             hot = pressed = null;
             ContentHeight = contentHeight;
-            Scroll = scroll;   // clamp
+            scroll = Clamp(scroll);
+            target = scroll;
+            dirty.Clear();
+            cacheFull = true;
+            RecreateCache();
             Invalidate();
         }
 
+        // The cache follows the control size; a resize rebuilds it at the new width.
+        void RecreateCache()
+        {
+            int h = Math.Max(16, Math.Max(Height, ContentHeight));
+            int w = Math.Max(16, Width);
+            if (bands != null && cacheW == w && cacheH == h) { cacheFull = true; return; }
+            DisposeBands();
+            cacheW = w;
+            cacheH = h;
+            int n = (h + BandHeight - 1) / BandHeight;
+            bands = new Bitmap[n];
+            for (int i = 0; i < n; i++)
+                bands[i] = new Bitmap(w, Math.Min(BandHeight, h - i * BandHeight), System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+            cacheFull = true;
+            dirty.Clear();
+        }
+
+        void DisposeBands()
+        {
+            if (bands == null) return;
+            foreach (Bitmap b in bands) if (b != null) b.Dispose();
+            bands = null;
+        }
+
         public void InvalidateContent(Rectangle r)
+        {
+            dirty.Add(r);
+            if (dirty.Count > 12) { cacheFull = true; dirty.Clear(); }
+            else
+            {
+                // Merge overlapping regions, so a burst of thumbnails is one repaint.
+                for (int i = 0; i < dirty.Count; i++)
+                    for (int j = i + 1; j < dirty.Count; j++)
+                        if (dirty[i].IntersectsWith(dirty[j]))
+                        {
+                            dirty[i] = Rectangle.Union(dirty[i], dirty[j]);
+                            dirty.RemoveAt(j);
+                            i = -1;
+                            break;
+                        }
+            }
+            r.Offset(0, -scroll);
+            r.Inflate(2, 2);
+            Invalidate(r);
+        }
+
+        public void InvalidateLiveContent(Rectangle r)
         {
             r.Offset(0, -scroll);
             r.Inflate(2, 2);
@@ -334,27 +475,106 @@ namespace IdleVeil
 
         protected override void OnPaint(PaintEventArgs e)
         {
+            long started = Stopwatch.GetTimestamp();
             Graphics g = e.Graphics;
             g.Clear(Back);
-            g.PixelOffsetMode = PixelOffsetMode.Half;
-            g.TranslateTransform(0, -scroll);
+            if (bands == null || cacheW != Width || cacheH < Height) RecreateCache();
+            if (cacheFull) PaintCache(Rectangle.Empty);
+            else FlushDirty();
+
             Rectangle clip = e.ClipRectangle;
-            clip.Offset(0, scroll);
+            int from = scroll + clip.Y;
+            int to = Math.Min(cacheH, from + clip.Height);
+            for (int i = 0; i < bands.Length && from < to; i++)
+            {
+                int top = i * BandHeight;
+                int a = Math.Max(top, from), b = Math.Min(top + bands[i].Height, to);
+                if (b <= a) continue;
+                g.PixelOffsetMode = PixelOffsetMode.Half;
+                g.DrawImage(bands[i], new Rectangle(0, a - scroll, cacheW, b - a), new Rectangle(0, a - top, cacheW, b - a), GraphicsUnit.Pixel);
+            }
+
+            // The parts that move every frame: live thumbnails, meters, the monitor map.
+            g.TranslateTransform(0, -scroll);
+            Rectangle view = new Rectangle(0, scroll, Width, Height);
             foreach (Widget w in Widgets)
-                if (w.Bounds.IntersectsWith(clip))
+                if (w.Bounds.IntersectsWith(view))
                 {
-                    try { w.Paint(g, Ui); }
+                    try
+                    {
+                        if (w.Dynamic) w.Paint(g, Ui);
+                        else w.PaintLive(g, Ui);
+                    }
                     catch (Exception ex) { Program.Log("settings paint error: " + ex.Message); }
                 }
             g.ResetTransform();
+
             Rectangle thumb = BarThumb;
             if (!thumb.IsEmpty)
             {
                 bool wide = barHot || dragBar;
-                int w = wide ? Ui.S(6) : Ui.S(3);
-                var r = new Rectangle(thumb.Right - Ui.S(3) - w, thumb.Y, w, thumb.Height);
-                Ui.Fill(g, r, w / 2f, wide ? Color.FromArgb(150, 150, 150) : Color.FromArgb(110, 110, 110));
+                int bw = wide ? Ui.S(6) : Ui.S(3);
+                var r = new Rectangle(thumb.Right - Ui.S(3) - bw, thumb.Y, bw, thumb.Height);
+                Ui.Fill(g, r, bw / 2f, wide ? Color.FromArgb(150, 150, 150) : Color.FromArgb(110, 110, 110));
             }
+
+            double ms = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
+            paints++;
+            paintTotal += ms;
+            if (ms > paintMax) paintMax = (float)ms;
+        }
+
+        // Paints the static layer. An empty region means the whole page.
+        void PaintCache(Rectangle region)
+        {
+            if (bands == null) return;
+            bool all = region.IsEmpty;
+            if (all) region = new Rectangle(0, 0, cacheW, cacheH);
+            region.Intersect(new Rectangle(0, 0, cacheW, cacheH));
+            if (region.Width <= 0 || region.Height <= 0) return;
+            for (int i = 0; i < bands.Length; i++)
+            {
+                int top = i * BandHeight;
+                Rectangle r = Rectangle.Intersect(region, new Rectangle(0, top, cacheW, bands[i].Height));
+                if (r.Width <= 0 || r.Height <= 0) continue;
+                using (Graphics g = Graphics.FromImage(bands[i]))
+                using (var b = new SolidBrush(Back))
+                {
+                    g.TranslateTransform(0, -top);
+                    g.SetClip(r);
+                    g.PixelOffsetMode = PixelOffsetMode.Half;
+                    g.FillRectangle(b, r);
+                    Ui.Caching = true;
+                    try
+                    {
+                        foreach (Widget w in Widgets)
+                            if (!w.Dynamic && w.Bounds.IntersectsWith(r))
+                            {
+                                try { w.Paint(g, Ui); }
+                                catch (Exception ex) { Program.Log("settings paint error: " + ex.Message); }
+                            }
+                    }
+                    finally { Ui.Caching = false; }
+                }
+            }
+            if (all) { cacheFull = false; dirty.Clear(); rebuilds++; }
+        }
+
+        void FlushDirty()
+        {
+            if (dirty.Count == 0) return;
+            foreach (Rectangle r in dirty) PaintCache(r);
+            dirty.Clear();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (glide != null) { glide.Dispose(); glide = null; }
+                DisposeBands();
+            }
+            base.Dispose(disposing);
         }
 
         Widget HitAt(Point client)
@@ -436,24 +656,26 @@ namespace IdleVeil
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             base.OnMouseWheel(e);
-            Scroll -= e.Delta * Ui.S(100) / 120;
+            TargetScroll -= e.Delta * Ui.S(100) / 120;
         }
 
         protected override void OnKeyDown(KeyEventArgs e)
         {
             base.OnKeyDown(e);
-            if (e.KeyCode == Keys.PageDown) Scroll += Height - Ui.S(40);
-            else if (e.KeyCode == Keys.PageUp) Scroll -= Height - Ui.S(40);
-            else if (e.KeyCode == Keys.Down) Scroll += Ui.S(40);
-            else if (e.KeyCode == Keys.Up) Scroll -= Ui.S(40);
-            else if (e.KeyCode == Keys.Home) Scroll = 0;
-            else if (e.KeyCode == Keys.End) Scroll = ContentHeight;
+            if (e.KeyCode == Keys.PageDown) TargetScroll += Height - Ui.S(40);
+            else if (e.KeyCode == Keys.PageUp) TargetScroll -= Height - Ui.S(40);
+            else if (e.KeyCode == Keys.Down) TargetScroll += Ui.S(40);
+            else if (e.KeyCode == Keys.Up) TargetScroll -= Ui.S(40);
+            else if (e.KeyCode == Keys.Home) TargetScroll = 0;
+            else if (e.KeyCode == Keys.End) TargetScroll = ContentHeight;
         }
 
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
-            Scroll = scroll;
+            scroll = Clamp(scroll);
+            target = Clamp(target);
+            if (target == scroll && glide != null) glide.Stop();
         }
     }
 

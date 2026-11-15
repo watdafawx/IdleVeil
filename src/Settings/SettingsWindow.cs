@@ -52,6 +52,7 @@ namespace IdleVeil
         readonly Surface nav, content;
         readonly List<Page> pages = new List<Page>();
         readonly Timer tick = new Timer();
+        readonly Timer resized = new Timer { Interval = 90 };
         Page current;
         bool rebuildQueued;
 
@@ -73,7 +74,7 @@ namespace IdleVeil
             nav = new Surface(UI) { Dock = DockStyle.Left, Back = Ui.Nav };
             content = new Surface(UI) { Dock = DockStyle.Fill, Back = Ui.Window };
             content.Scrolled += delegate { if (current != null) current.Scrolled(); };
-            content.Resize += delegate { QueueRebuild(); };
+            content.Resize += delegate { QueueResize(); };
             Controls.Add(content);
             Controls.Add(nav);
 
@@ -86,8 +87,9 @@ namespace IdleVeil
             foreach (Page p in pages) p.Window = this;
 
             host.StateChanged += OnStateChanged;
-            tick.Interval = 100;
+            tick.Interval = 33;
             tick.Tick += delegate { OnTick(); };
+            resized.Tick += delegate { resized.Stop(); if (!IsDisposed) RebuildAll(); };
 
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
             Bounds = new Rectangle(wa.X + wa.Width / 4, wa.Y + wa.Height / 4, 800, 600);   // real size once the DPI is known
@@ -160,10 +162,22 @@ namespace IdleVeil
             if (a == wasActive) return;
             wasActive = a;
             if (a) { tick.Start(); if (current != null) current.Shown(); }
-            else { tick.Stop(); if (current != null) current.Hidden(); }
+            else
+            {
+                tick.Stop();
+                if (current != null) current.Hidden();
+                int n = 0, rb = 0; float av = 0, mx = 0;
+                content.TakeStats(out n, out av, out mx, out rb);   // discard the inactive period
+            }
             // A slow check while inactive, to notice the veil going away.
             if (!a && Visible) { tick.Interval = 1000; tick.Start(); }
-            else tick.Interval = 100;
+            else tick.Interval = 33;
+        }
+
+        void QueueResize()
+        {
+            resized.Stop();
+            resized.Start();
         }
 
         void OnTick()
@@ -171,6 +185,25 @@ namespace IdleVeil
             bool a = Active;
             if (a != wasActive) UpdateActivity();
             if (a && current != null) current.Tick();
+            if (a) LogPerf();
+        }
+
+        int perfAt;
+
+        // Once every 10 s, a line in the perf log: paints per second and how long they take.
+        // This is the number to watch when the window feels slow.
+        void LogPerf()
+        {
+            int now = Environment.TickCount;
+            if (perfAt == 0) { perfAt = now + 10000; return; }
+            if (now - perfAt < 0) return;
+            perfAt = now + 10000;
+            int n, rebuilds;
+            float avg, max;
+            content.TakeStats(out n, out avg, out max, out rebuilds);
+            AppLog.Perf("ui settings: paints=" + (n / 10) + "/s avg=" + avg.ToString("0.0") + " ms max=" + max.ToString("0.0")
+                        + " ms cache rebuilds=" + rebuilds + " scroll=" + content.Scroll + "/" + content.ContentHeight
+                        + " thumbs=" + Thumbs.Fps + " fps");
         }
 
         void OnThumbFrame()
@@ -190,7 +223,7 @@ namespace IdleVeil
             foreach (Widget w in s.Widgets)
             {
                 var t = w as IThumbView;
-                if (t != null && w.Bounds.IntersectsWith(view) && t.HasFreshFrame) w.Invalidate();
+                if (t != null && w.Bounds.IntersectsWith(view) && t.HasFreshFrame) w.InvalidateLive();
             }
         }
 
@@ -282,6 +315,8 @@ namespace IdleVeil
             base.OnFormClosed(e);
             Host.StateChanged -= OnStateChanged;
             tick.Stop();
+            resized.Stop();
+            resized.Dispose();
             if (current != null) current.Hidden();
             Thumbs.Dispose();
         }

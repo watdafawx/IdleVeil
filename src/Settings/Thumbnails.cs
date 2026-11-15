@@ -13,6 +13,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -27,8 +28,8 @@ namespace IdleVeil
 
         readonly object gate = new object();
         byte[] front, back;   // BGRA rows, W*4 bytes each
-        bool fresh;
-        Bitmap bmp;           // UI thread only
+        Bitmap bmpFront, bmpBack;   // the newest frame, and the one being filled
+        bool fresh, hasFrame;
 
         // Span thumbnails (settings monitor map): the screens, scaled into this W x H picture. One
         // SceneHost in Span mode renders every part, so the preview shows the real span composition.
@@ -37,48 +38,68 @@ namespace IdleVeil
         public Thumb(string id, int w, int h) { Id = id; W = w; H = h; }
         public Thumb(string id, int w, int h, GpuScreen[] parts) : this(id, w, h) { Parts = parts; }
 
-        // Render thread: publish a frame.
+        // Render thread: a buffer to read the next frame into.
         internal byte[] BackBuffer { get { return back ?? (back = new byte[W * H * 4]); } }
 
+        // Render thread: the pixels in BackBuffer are complete. They become a bitmap here, not on
+        // the UI thread: the UI thread only ever blits one, which is what keeps previews cheap.
         internal void Publish()
         {
+            if (back == null) return;
+            if (bmpBack == null) bmpBack = new Bitmap(W, H, PixelFormat.Format32bppRgb);
+            BitmapData d = bmpBack.LockBits(new Rectangle(0, 0, W, H), ImageLockMode.WriteOnly, PixelFormat.Format32bppRgb);
+            try
+            {
+                if (d.Stride == W * 4) Marshal.Copy(back, 0, d.Scan0, back.Length);
+                else for (int y = 0; y < H; y++) Marshal.Copy(back, y * W * 4, d.Scan0 + y * d.Stride, W * 4);
+            }
+            finally { bmpBack.UnlockBits(d); }
             lock (gate)
             {
                 byte[] t = front; front = back; back = t;
+                Bitmap b = bmpFront; bmpFront = bmpBack; bmpBack = b;
+                hasFrame = true;
                 fresh = true;
             }
         }
 
         public bool Fresh { get { lock (gate) return fresh; } }
 
-        // UI thread: the newest frame as a bitmap, or null before the first one.
-        public Bitmap Image
+        // UI thread: draw the newest frame, clearing the "new frame" flag. A clipped-out card does
+        // not consume the frame, so it is still drawn the next time it is really visible.
+        public bool Draw(Graphics g, Rectangle r)
         {
-            get
+            lock (gate)
             {
-                lock (gate)
-                {
-                    if (fresh && front != null)
-                    {
-                        if (bmp == null) bmp = new Bitmap(W, H, PixelFormat.Format32bppRgb);
-                        BitmapData d = bmp.LockBits(new Rectangle(0, 0, W, H), ImageLockMode.WriteOnly, PixelFormat.Format32bppRgb);
-                        try
-                        {
-                            if (d.Stride == W * 4) Marshal.Copy(front, 0, d.Scan0, front.Length);
-                            else for (int y = 0; y < H; y++) Marshal.Copy(front, y * W * 4, d.Scan0 + y * d.Stride, W * 4);
-                        }
-                        finally { bmp.UnlockBits(d); }
-                        fresh = false;
-                    }
-                }
-                return bmp;
+                if (!hasFrame || bmpFront == null || !g.IsVisible(r)) return false;
+                g.InterpolationMode = bmpFront.Width == r.Width && bmpFront.Height == r.Height ? InterpolationMode.NearestNeighbor : InterpolationMode.Bilinear;
+                g.PixelOffsetMode = PixelOffsetMode.Half;
+                g.DrawImage(bmpFront, r);
+                fresh = false;
+                return true;
+            }
+        }
+
+        // UI thread: draw a crop of the newest frame (the span map shows one picture over screens).
+        public bool Draw(Graphics g, Rectangle r, Rectangle src)
+        {
+            lock (gate)
+            {
+                if (!hasFrame || bmpFront == null || !g.IsVisible(r)) return false;
+                src.Intersect(new Rectangle(0, 0, bmpFront.Width, bmpFront.Height));
+                if (src.Width <= 0 || src.Height <= 0) return false;
+                g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                g.PixelOffsetMode = PixelOffsetMode.Half;
+                g.DrawImage(bmpFront, r, src, GraphicsUnit.Pixel);
+                fresh = false;
+                return true;
             }
         }
     }
 
     sealed class ThumbRenderer : IDisposable
     {
-        public int Fps = 10;
+        public int Fps = 30;
         public volatile bool Paused;
         public volatile string Adapter;   // set once the device exists
         public volatile string Error;     // why there is no device
