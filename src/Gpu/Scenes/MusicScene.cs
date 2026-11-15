@@ -69,6 +69,7 @@ float4 PS(float4 pos : SV_Position) : SV_Target { return float4(0.0, 0.0, 0.0, D
             clock = GpuScenes.Create(MusicConfig.Clock) as ClockScene;
             if (clock == null) clock = new ClockSevenSegScene();
             clock.Init(Gpu, Setup);
+            AppLog.Info("music", "music scene: viz " + VizId + (random ? " (random from " + string.Join(",", vizIds) + ")" : "") + ", clock " + MusicConfig.Clock);
             dim = new FullscreenPass(Gpu, DimShader);
             dimK = new SceneConstants(Gpu, 4);
 
@@ -82,6 +83,8 @@ float4 PS(float4 pos : SV_Position) : SV_Target { return float4(0.0, 0.0, 0.0, D
             }
         }
 
+        string VizId { get { int i = vizzes.IndexOf(viz); return i >= 0 && i < vizIds.Length ? vizIds[i] : "?"; } }
+
         IGpuScene Choose()
         {
             if (!random || vizzes.Count == 1) return vizzes[0];
@@ -90,9 +93,16 @@ float4 PS(float4 pos : SV_Position) : SV_Target { return float4(0.0, 0.0, 0.0, D
             return vizzes[i >= 0 && i < vizzes.Count ? i : 0];
         }
 
+        float lastTarget = -1f;
+
         public override void Update(FrameContext f)
         {
             float target = forced >= 0f ? forced : (f.Audio.Playing ? 1f : 0f);
+            if (target != lastTarget)
+            {
+                if (lastTarget >= 0f) AppLog.Info("music", target > 0f ? "music playing" + (random && vizMix <= 0f ? "" : ": showing " + VizId) : "music stopped: back to the clock");
+                lastTarget = target;
+            }
             if (vizMix < 0f) vizMix = target;
             else
             {
@@ -101,6 +111,7 @@ float4 PS(float4 pos : SV_Position) : SV_Target { return float4(0.0, 0.0, 0.0, D
                 {
                     generation++;
                     viz = Choose();
+                    AppLog.Info("music", "music visualizer switched to " + VizId);
                 }
                 float step = f.Dt / 2f;
                 vizMix += Math.Max(-step, Math.Min(step, target - vizMix));

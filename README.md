@@ -92,7 +92,10 @@ IdleVeil.exe [options]
                                written by a remote-control server
   --fps <n>                    Frame rate (default 30 for GDI scenes, 60 for GPU)
   --gdi                        Use the old GDI renderer even for GPU scenes
-  --stats                      Log fps and frame times every 5 s
+  --stats                      Same as --perf-every 5
+  --perf-every <seconds>       Perf log sample period while a veil shows (default 10)
+  --log-console                Mirror the log to the terminal (or a redirected stdout)
+  --debug                      Debug-level logging for this run
   --render-test <dir>          Render the GPU scenes to PNGs in <dir> and quit
                                (with --mode, --screens, --frames <n>)
   --fake-audio                 Drive the music visualizers with synthetic audio
@@ -107,8 +110,10 @@ IdleVeil.exe [options]
   --off-monitor <id>           Monitor to turn off, by its EDID id (e.g. AUS2740)
   --off-after <seconds>        How long the animation shows before that monitor
                                is turned off (default 300)
-  --exit                       Tell a running IdleVeil to quit
+  --exit                       Tell a running IdleVeil to quit (with --preview: a running preview)
 ```
+
+Logs: see [docs/logging.md](docs/logging.md).
 
 ## Uninstall
 
@@ -127,7 +132,7 @@ IdleVeil-Setup-1.0.0.exe --silent [--no-autostart]
 | --- | --- |
 | `%LOCALAPPDATA%\Programs\IdleVeil` | `IdleVeil.exe`, `Uninstall.exe` |
 | `%APPDATA%\IdleVeil\IdleVeil.ini` | Your settings |
-| `%APPDATA%\IdleVeil\IdleVeil.log` | Start-up and error log |
+| `%APPDATA%\IdleVeil\logs\` | App, perf and crash logs, one file per day (kept 7 days; see [docs/logging.md](docs/logging.md)) |
 
 ## Building from source
 

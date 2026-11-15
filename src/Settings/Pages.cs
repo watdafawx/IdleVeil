@@ -1247,8 +1247,18 @@ namespace IdleVeil
             l.Row(Glyphs.Info, "Version " + AppInfo.Version, Host.UpdateStatus ?? "Check GitHub for a newer release.",
                   new PushButton(Glyphs.Update, "Check now", false, delegate { Host.CheckForUpdates(); }));
 
+            l.Header("Logs");
+            l.Row(Glyphs.Folder, "Log files", AppPaths.Logs + "  (app, perf and crash logs, one file per day)",
+                  new PushButton(null, "Open logs folder", false, delegate { Open(AppPaths.Logs); }));
+            l.Row(Glyphs.Document, "Detailed logging", "Also log debug details (idle state every 10 s and more). Performance samples are always logged while the veil shows.",
+                  new Toggle(Opt.Debug, delegate(bool on) { Opt.Debug = on; Changed(); }));
+            l.Row(Glyphs.Delete, "Keep logs for", "Older app and perf logs are deleted once a day. Crash reports are kept 30 days; the folder never grows past 200 MB.",
+                  new DropDown(new[] { "3", "7", "14", "30" }, new[] { "3 days", "7 days", "14 days", "30 days" }, AppLog.Days.ToString(),
+                               delegate(string v) { AppLog.Days = int.Parse(v); Changed(); }));
+            l.Row(Glyphs.Copy, "Copy diagnostics", "Version, system, screens, audio device and the last 200 log lines, for a bug report.",
+                  new PushButton(Glyphs.Copy, "Copy", false, delegate { CopyDiagnostics(); }));
+
             l.Header("Files");
-            l.Row(Glyphs.Document, "Log", AppPaths.Log, new PushButton(null, "Open log", false, delegate { Open(AppPaths.Log); }));
             l.Row(Glyphs.Folder, "Settings", AppPaths.Settings, new PushButton(null, "Open folder", false, delegate { Open(AppPaths.Dir); }));
 
             l.Header("About");
@@ -1263,6 +1273,16 @@ namespace IdleVeil
             string thumbs = Window.Thumbs.Adapter != null ? "Direct3D 11 works on " + Window.Thumbs.Adapter + "." : Window.Thumbs.Error != null ? "No Direct3D 11 device: " + Window.Thumbs.Error + "." : null;
             if (Opt.ForceGdi) return "Off: every scene uses the older GDI renderer." + (thumbs != null ? " " + thumbs : "");
             return s ?? ("Not used yet in this session. " + (thumbs ?? ""));
+        }
+
+        static void CopyDiagnostics()
+        {
+            try
+            {
+                Clipboard.SetText(AppLog.Diagnostics());
+                AppLog.Info("settings", "diagnostics copied to the clipboard");
+            }
+            catch (Exception ex) { AppLog.Warn("settings", "copy diagnostics failed: " + ex.Message); }
         }
 
         static void Open(string target)

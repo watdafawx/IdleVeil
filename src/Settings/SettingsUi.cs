@@ -230,7 +230,7 @@ namespace IdleVeil
         public const string Add = "\uE710", Delete = "\uE74D", Folder = "\uE8B7", Document = "\uE8A5", Info = "\uE946", Shuffle = "\uE8B1";
         public const string Cursor = "\uE7C9", Robot = "\uE99A", Video = "\uE714", Startup = "\uE7B5", Update = "\uE895", Gpu = "\uE950";
         public const string Monitor = "\uE7F8", Warning = "\uE7BA", Link = "\uE71B", Pause = "\uE769", Clock = "\uE917", Speaker = "\uE767";
-        public const string Star = "\uE734", Apps2 = "\uECAA";
+        public const string Star = "\uE734", Apps2 = "\uECAA", Copy = "\uE8C8";
     }
 
     abstract class Widget

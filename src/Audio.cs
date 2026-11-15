@@ -21,6 +21,7 @@ namespace IdleVeil
         public const int CLSCTX_ALL = 0x17;
         public const int AUDCLNT_SHAREMODE_SHARED = 0;
         public const uint AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000;
+        public const uint AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY = 0x1;
         public const uint AUDCLNT_BUFFERFLAGS_SILENT = 0x2;
 
         public const ushort WAVE_FORMAT_PCM = 1, WAVE_FORMAT_IEEE_FLOAT = 3, WAVE_FORMAT_EXTENSIBLE = 0xFFFE;
@@ -146,6 +147,10 @@ namespace IdleVeil
         const float SilenceMs = 500f;         // no packets this long: treat as silence
         const float PlayLevel = 0.03f;        // a band above this counts as sound
         const float HysteresisSeconds = 2f;   // sound / quiet time before Playing flips
+
+        // Capture packets Windows marked as a gap (DATA_DISCONTINUITY: samples were lost because we
+        // read too late). Counted for the perf log; the first packet after opening a device may count.
+        public static int Glitches;
 
         static readonly object Gate = new object();
         static AudioFeed shared;
@@ -593,6 +598,7 @@ namespace IdleVeil
                 {
                     int n = (int)frames;
                     bool silent = (flags & Wasapi.AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+                    if ((flags & Wasapi.AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0) Glitches++;
                     lock (ringLock)
                     {
                         if (silent)

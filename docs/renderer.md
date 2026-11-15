@@ -48,7 +48,7 @@ screenshots. Use `--capturable` to turn that off when you need a screenshot.
    fade-in, then `Present(1, 0)` (vsync).
 
 **Failure.** If device creation, a shader compile, window creation or anything in `Init` throws,
-`GpuVeil.TryCreate` returns null. The error is logged (`GPU init failed: ...` in `IdleVeil.log`),
+`GpuVeil.TryCreate` returns null. The error is logged (`GPU init failed: ...` in `logs\app-<date>.log`),
 the GPU path is disabled for 10 minutes and the controller uses GDI. A lost device marks the veil
 `Broken`, and the controller rebuilds it. Nothing in this path may crash the tray app.
 
@@ -357,7 +357,8 @@ pwsh -NoProfile -File .\build.ps1 -Version 1.2.0-dev
 ```
 
 Put an empty `build\IdleVeil.ini` next to the exe (it is gitignored). That makes test runs
-portable, so the log goes to `build\IdleVeil.log` instead of `%APPDATA%\IdleVeil`.
+portable, so the logs go to `build\logs\` instead of `%APPDATA%\IdleVeil`. Without that ini a
+build from source uses `%APPDATA%\IdleVeilDev`, never the installed copy's folder.
 
 **Off-screen PNGs.** Renders at the real monitor resolutions and needs no visible window:
 
@@ -378,15 +379,16 @@ portable, so the log goes to `build\IdleVeil.log` instead of `%APPDATA%\IdleVeil
 **Live preview with stats** (keep each run ≤ 8 s if someone is at the desk):
 
 ```powershell
-.\build\IdleVeil.exe --preview --mode fireflies --screens span --stats
-# after ~5 s IdleVeil.log shows:
-# gpu stats: fps=60.7 frame ms avg=0.94 max=1.63 longest gap ms=17.0 cpu=0.2% screens=3 span ...
-Stop-Process -Name IdleVeil   # then restore cursors:
+.\build\IdleVeil.exe --preview --mode fireflies --screens span --perf-every 2
+# build\logs\perf-<date>.log gets a line every 2 s:
+# veil fps=60.7 min=60.6 frame ms p50=16.5 p95=16.7 p99=16.8 max=16.9 work ms p50=0.94 p99=1.63 late=0 dropped=0 cpu=0.2% ...
+.\build\IdleVeil.exe --exit --preview   # closes it cleanly and writes the summary line
+# if it had to be killed instead, restore cursors:
 Add-Type -Namespace W -Name C -MemberDefinition '[DllImport("user32.dll")] public static extern bool SystemParametersInfo(uint a, uint b, System.IntPtr c, uint d);'; [W.C]::SystemParametersInfo(0x57, 0, [IntPtr]::Zero, 0)
 ```
 
-- The target is fps ≈ 60 and `longest gap` < 20 ms. `frame ms` is CPU time per frame (update +
-  submit).
+- The target is fps ≈ 60 and `p99` < 20 ms. `work ms` is CPU time per frame (update +
+  submit). Every field is explained in [logging.md](logging.md).
 - Killing the process leaves cursors hidden. The app restores them at startup, but restore them
   right away after a kill anyway.
 - Other flags: `--fake-audio` (synthetic music, for visualizers in a quiet room), `--gdi` (force
@@ -395,7 +397,7 @@ Add-Type -Namespace W -Name C -MemberDefinition '[DllImport("user32.dll")] publi
 
 **Shader errors.** A compile error throws
 `shader PS (ps_5_0) failed to compile: <compiler output>`. It shows up in `render-test.txt` and
-`IdleVeil.log` (`render test failed` / `GPU init failed`). The live app falls back to GDI, so a
+the app log (`render test failed` / `GPU init failed`). The live app falls back to GDI, so a
 broken shader shows the GDI version instead of crashing. Always check the log.
 
 ---
@@ -511,7 +513,7 @@ case "fireflies": return new FirefliesScene();
 ```powershell
 pwsh -NoProfile -File .\build.ps1 -Version 1.2.0-dev
 .\build\IdleVeil.exe --render-test $env:TEMP\ff --mode fireflies     # look at the PNGs
-.\build\IdleVeil.exe --preview --mode fireflies --screens span --stats   # ≤ 8 s, read fps, kill, restore cursors
+.\build\IdleVeil.exe --preview --mode fireflies --screens span --perf-every 2   # ≤ 8 s, then --exit --preview, read build\logs\perf-*.log
 ```
 
 ---

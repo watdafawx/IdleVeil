@@ -90,6 +90,7 @@ namespace IdleVeil
         public Rectangle Area { get; private set; }
         public bool Broken { get { return broken; } }
         public static bool Capturable;   // --capturable: don't exclude from capture (to screenshot the overlay while testing)
+        public static bool CrashTest;    // --crash-test render: throw once on the render thread (tests crash reports)
         public static volatile string LastAdapter, LastError;   // for the settings window's renderer status
 
         readonly GpuScreen[] screens;
@@ -160,10 +161,30 @@ namespace IdleVeil
             try { Loop(); }
             catch (Exception ex)
             {
-                Program.Log("GPU render loop failed: " + ex);
+                // The controller sees Broken and rebuilds the overlay (on the GPU again, or with GDI).
+                AppLog.Crash("GPU render thread (recovered: overlay is rebuilt)", ex);
                 broken = true;
             }
+            try { if (stats != null) AppLog.Perf(stats.Summary(Stopwatch.GetTimestamp())); } catch { }
             Cleanup();
+        }
+
+        FrameStats stats;
+
+        // Names for the HRESULTs of Present and GetDeviceRemovedReason.
+        static string DxgiName(int hr)
+        {
+            switch ((uint)hr)
+            {
+                case 0: return "S_OK";
+                case 0x887A0001: return "DXGI_ERROR_INVALID_CALL";
+                case 0x887A0005: return "DXGI_ERROR_DEVICE_REMOVED";
+                case 0x887A0006: return "DXGI_ERROR_DEVICE_HUNG";
+                case 0x887A0007: return "DXGI_ERROR_DEVICE_RESET";
+                case 0x887A0020: return "DXGI_ERROR_DRIVER_INTERNAL_ERROR";
+                case 0x8007000E: return "E_OUTOFMEMORY";
+                default: return "0x" + hr.ToString("X8");
+            }
         }
 
         void Init()
@@ -331,11 +352,8 @@ namespace IdleVeil
             for (int i = 0; i < waits.Length; i++) waits[i] = outputs[i].Waitable;
             var clock = Stopwatch.StartNew();
             long freq = Stopwatch.Frequency, period = freq / fpsCap;
-            long last = clock.ElapsedTicks, lastRaise = last, statsStart = last;
-            double workSum = 0, workMax = 0, gapMax = 0;
-            int frames = 0;
-            var proc = Process.GetCurrentProcess();
-            TimeSpan cpuStart = proc.TotalProcessorTime;
+            long last = clock.ElapsedTicks, lastRaise = last;
+            stats = new FrameStats(fpsCap, "gpu=\"" + gpu.AdapterName + "\" screens=" + outputs.Count + " " + ScreenModes.Name(host.Mode) + " " + string.Join(",", sceneIds));
 
             while (!stop)
             {
@@ -355,9 +373,14 @@ namespace IdleVeil
 
                 long start = clock.ElapsedTicks;
                 float dt = (start - last) / (float)freq;
-                gapMax = Math.Max(gapMax, (start - last) * 1000.0 / freq);
+                double gapMs = (start - last) * 1000.0 / freq;
                 last = start;
 
+                if (CrashTest && stats != null && clock.ElapsedMilliseconds > 2000)
+                {
+                    CrashTest = false;
+                    throw new InvalidOperationException("crash test (--crash-test render)");
+                }
                 host.Update(dt);
                 for (int i = 0; i < outputs.Count; i++)
                 {
@@ -365,14 +388,16 @@ namespace IdleVeil
                     int hr = outputs[i].Swap.Present(1, 0);
                     if (hr == D3D.DXGI_ERROR_DEVICE_REMOVED || hr == D3D.DXGI_ERROR_DEVICE_RESET)
                     {
-                        Program.Log("GPU device lost (0x" + hr.ToString("X8") + ", reason 0x" + gpu.Device.GetDeviceRemovedReason().ToString("X8") + ")");
+                        int reason;
+                        try { reason = gpu.Device.GetDeviceRemovedReason(); } catch { reason = hr; }
+                        AppLog.Error("gpu", "device lost on screen " + (i + 1) + " of " + outputs.Count + ": Present returned " + DxgiName(hr) + ", GetDeviceRemovedReason "
+                                     + DxgiName(reason) + " (adapter \"" + gpu.AdapterName + "\"); the overlay is rebuilt with a new device");
                         broken = true;
                         return;
                     }
                 }
-                double work = (clock.ElapsedTicks - start) * 1000.0 / freq;
-                workSum += work; workMax = Math.Max(workMax, work);
-                frames++;
+                long end = clock.ElapsedTicks;
+                stats.Frame(gapMs, (end - start) * 1000.0 / freq, Stopwatch.GetTimestamp());
 
                 // The taskbar is topmost too and can push itself above us, so re-raise once a second.
                 if (start - lastRaise > freq)
@@ -380,18 +405,8 @@ namespace IdleVeil
                     lastRaise = start;
                     foreach (Output o in outputs) RaiseToTop(o.Hwnd);
                 }
-                if (SaverForm.Stats && start - statsStart > 5 * freq)
-                {
-                    double secs = (start - statsStart) / (double)freq;
-                    proc.Refresh();
-                    TimeSpan cpu = proc.TotalProcessorTime;
-                    Program.Log("gpu stats: fps=" + (frames / secs).ToString("0.0") + " frame ms avg=" + (workSum / frames).ToString("0.00")
-                                + " max=" + workMax.ToString("0.00") + " longest gap ms=" + gapMax.ToString("0.0")
-                                + " cpu=" + ((cpu - cpuStart).TotalMilliseconds / (secs * 1000.0) * 100.0 / Environment.ProcessorCount).ToString("0.0") + "%"
-                                + " screens=" + outputs.Count + " " + ScreenModes.Name(host.Mode) + " " + string.Join(",", sceneIds));
-                    cpuStart = cpu;
-                    frames = 0; workSum = 0; workMax = 0; gapMax = 0; statsStart = start;
-                }
+                long ts = Stopwatch.GetTimestamp();
+                if (stats.Due(ts)) AppLog.Perf(stats.Report(ts));
             }
         }
 
