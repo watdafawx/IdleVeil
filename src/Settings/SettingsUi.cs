@@ -197,11 +197,52 @@ namespace IdleVeil
             }
         }
 
-        const TextFormatFlags Keep = TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform | TextFormatFlags.NoPrefix;
+        // Text is drawn with GDI+ in grayscale (AntiAliasGridFit), not GDI ClearType. ClearType's
+        // colour fringes (orange on one side, blue on the other) read as a shadow on OLED panels
+        // and at small sizes; this looks like the Windows title bar instead. It is also much
+        // cheaper: GDI's TextRenderer locks the whole destination bitmap for every line.
+        static Graphics measureG;
+        static readonly StringFormat FmtLine, FmtGlyph, FmtWrap;
+
+        static Ui()
+        {
+            FmtLine = Typo(false);
+            FmtLine.Trimming = StringTrimming.EllipsisCharacter;
+            FmtGlyph = Typo(false);
+            FmtGlyph.Alignment = StringAlignment.Center;
+            FmtGlyph.LineAlignment = StringAlignment.Center;
+            FmtWrap = Typo(true);
+        }
+
+        static StringFormat Typo(bool wrap)
+        {
+            var sf = (StringFormat)StringFormat.GenericTypographic.Clone();
+            sf.FormatFlags &= ~StringFormatFlags.NoClip;   // stay inside the rectangle
+            sf.HotkeyPrefix = HotkeyPrefix.None;
+            sf.Trimming = StringTrimming.None;
+            if (!wrap) sf.FormatFlags |= StringFormatFlags.NoWrap;
+            return sf;
+        }
+
+        static Graphics MeasureGraphics()
+        {
+            if (measureG == null)
+            {
+                measureG = Graphics.FromImage(new Bitmap(1, 1));
+                measureG.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            }
+            return measureG;
+        }
 
         public void DrawText(Graphics g, string s, Font f, Color c, Rectangle r, TextFormatFlags flags)
         {
-            TextRenderer.DrawText(g, s, f, r, c, flags | Keep);
+            if (string.IsNullOrEmpty(s) || r.Width <= 0 || r.Height <= 0) return;
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            bool wrap = (flags & TextFormatFlags.WordBreak) != 0;
+            StringFormat sf = wrap ? FmtWrap : (flags & TextFormatFlags.HorizontalCenter) != 0 ? FmtGlyph : FmtLine;
+            if (!wrap) sf.LineAlignment = (flags & TextFormatFlags.VerticalCenter) != 0 ? StringAlignment.Center : StringAlignment.Near;
+            using (var b = new SolidBrush(c))
+                g.DrawString(s, f, b, new RectangleF(r.X, r.Y, r.Width, r.Height), sf);
         }
 
         // One line, vertically centred in r.
@@ -217,13 +258,16 @@ namespace IdleVeil
 
         public Size Measure(string s, Font f)
         {
-            return TextRenderer.MeasureText(s, f, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+            if (string.IsNullOrEmpty(s)) return Size.Empty;
+            SizeF sz = MeasureGraphics().MeasureString(s, f, new SizeF(100000, 100000), FmtLine);
+            return new Size((int)Math.Ceiling(sz.Width) + 1, (int)Math.Ceiling(sz.Height) + 1);
         }
 
         public int WrapHeight(string s, Font f, int width)
         {
             if (string.IsNullOrEmpty(s)) return 0;
-            return TextRenderer.MeasureText(s, f, new Size(Math.Max(1, width), int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding).Height;
+            SizeF sz = MeasureGraphics().MeasureString(s, f, new SizeF(Math.Max(1, width), 100000), FmtWrap);
+            return (int)Math.Ceiling(sz.Height) + 1;
         }
     }
 
