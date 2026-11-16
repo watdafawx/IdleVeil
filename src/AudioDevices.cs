@@ -29,6 +29,17 @@ namespace IdleVeil
         public static string Device = "default";   // ini audiodevice=
         public static string Override;             // --audio-device, wins for this run, never saved
 
+        // 1..5, ini audiosensitivity=. The old fixed 40 dB window sat between level 3 (42) and
+        // level 4 (34); 4 is the default because the visualizers looked too tame on quiet mixes.
+        // Smaller dB windows move the bars more.
+        public static int Sensitivity = 4;
+        public static readonly string[] SensitivityNames = { "Low", "Medium-low", "Medium", "High", "Very high" };
+        static readonly float[] RangeDbByLevel = { 56f, 48f, 42f, 34f, 26f };
+
+        public static float RangeDb { get { return RangeDbByLevel[Math.Max(1, Math.Min(5, Sensitivity)) - 1]; } }
+
+        public static void SetSensitivity(int level) { Sensitivity = Math.Max(1, Math.Min(5, level)); }
+
         public static string Effective { get { return Override ?? Device; } }
 
         public static void Set(string value) { Device = Normalize(value); }

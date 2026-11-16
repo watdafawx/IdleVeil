@@ -31,13 +31,21 @@ covers what is specific to these scenes.
   `SegClockScene` (a `TextBatch` 7-segment clock with style hooks). `clock`, `clock-neon` and
   `clock-music` are small subclasses of it; `clock-led` and `clock-analog` are their own shaders.
 - `src/Gpu/Scenes/MusicScene.cs`: the `music` crossfade.
-- `src/AudioDevices.cs`: device list (friendly names), peak meters, `AudioConfig` (`audiodevice=`),
-  the auto picker and the resolver `src/Audio.cs` asks every 2 s which device to capture.
+- `src/AudioDevices.cs`: device list (friendly names), peak meters, `AudioConfig`
+  (`audiodevice=`, `audiosensitivity=`), the auto picker and the resolver `src/Audio.cs` asks
+  every 2 s which device to capture.
 - `src/Gpu/MusicSupport.cs`: `MusicConfig` (settings, labels, GDI fallback, random picks) and
   `SoundProbe`.
 - `src/Settings/`: the settings window's Music page and the live scene previews (`Thumbnails.cs`).
 
 ## Design choices
+
+**Sensitivity.** The analyzer maps each band's dB onto 0..1 below an adaptive ceiling (jumps up
+instantly, sinks 3 dB/s), so a quieter mix still fills the bars. The distance from that ceiling to
+silence is the user's sensitivity: 56, 48, 42, 34 or 26 dB for Low..Very high, DeckViz's scale.
+Smaller windows make the same music move further. It lives in `AudioConfig.RangeDb` and is read on
+every analysis frame (the setting window previews it live), so changing it applies to the running
+veil without reopening the capture.
 
 **Burn-in.** All scenes are mostly black. Nothing stays put: visualizers wander with `Burn` and
 Lissajous drifts, clocks drift on periods of 3 to 6 minutes (the amplitude is capped so the clock never
@@ -91,13 +99,19 @@ Settings window, **Music** page:
    (captured as loopback) or recording device (captured directly, e.g. Voicemeeter Out B1), with
    the level of the device being captured, the loudest devices right now (click one to use it),
    and a Refresh button (the list also updates by itself every 3 s).
-5. A live "music detected" meter on top, and under "Try it" a **Test** button that shows the real veil in music mode.
+5. "Sensitivity": the dB window the bands are mapped onto, in five steps (Low, Medium-low,
+   Medium, High, Very high = 56, 48, 42, 34, 26 dB; the same scale as DeckViz). The strip below
+   shows the bands the visualizers get, so the meter can be watched while the slider is dragged.
+   Smaller windows make quiet music move more. The default is High; the old fixed value was
+   between Medium and High.
+6. A live "music detected" meter on top, and under "Try it" a **Test** button that shows the real veil in music mode.
 
 Stored in IdleVeil.ini as `musicviz=<id>|random`, `musicpool=<id>,<id>,...`,
-`musicviz.<EDID key>=<id>|random` (per-screen), `musicclock=<id>` and
-`audiodevice=default|auto|<endpoint id>`; unknown values are ignored. A chosen device that is
-missing falls back to the default output (logged) and is picked up again when it returns; a
-capture that fails (`AUDCLNT_E_DEVICE_INVALIDATED`, unplugged) is reopened after 3 s.
+`musicviz.<EDID key>=<id>|random` (per-screen), `musicclock=<id>`,
+`audiodevice=default|auto|<endpoint id>` and `audiosensitivity=1..5`; unknown values are ignored.
+A chosen device that is missing falls back to the default output (logged) and is picked up again
+when it returns; a capture that fails (`AUDCLNT_E_DEVICE_INVALIDATED`, unplugged) is reopened
+after 3 s.
 `--audio-test` lists all devices with their levels; `--audio-device <id|name part>` overrides the
 setting for one run.
 

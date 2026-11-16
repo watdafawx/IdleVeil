@@ -270,6 +270,7 @@ namespace IdleVeil
                     else if (k == "musicviz" || k == "musicclock" || k == "musicpool" || k.StartsWith("musicviz.")) MusicConfig.Set(line.Substring(0, eq).Trim(), v);
                     else if (k == "clockscreen") SpanConfig.Set(k, v);
                     else if (k == "audiodevice") AudioConfig.Set(v);
+                    else if (k == "audiosensitivity") { int n; if (int.TryParse(v, out n)) AudioConfig.SetSensitivity(n); }
                     else if (k.StartsWith("scene.") && v != "") SceneFor[line.Substring(0, eq).Trim().Substring(6)] = v.ToLowerInvariant();
                     else if (k == "idle") IdleSeconds = int.Parse(v);
                     else if (k == "hidecursor") HideCursor = v == "1" || v.ToLowerInvariant() == "true";
@@ -303,7 +304,8 @@ namespace IdleVeil
                 "ignoreinjected=" + (IgnoreInjected ? "1" : "0"), "keeponfor=" + KeepOnFor,
                 "offmonitor=" + OffMonitor, "offafter=" + OffAfterSeconds, "noveilapps=" + string.Join(",", NoVeilApps.ToArray()), "autoupdate=" + (AutoUpdate ? "1" : "0"),
                 "debug=" + (Debug ? "1" : "0"), "logdays=" + AppLog.Days, "screens=" + Screens, "renderer=" + (ForceGdi ? "gdi" : "gpu"),
-                "musicviz=" + MusicConfig.Viz, "musicclock=" + MusicConfig.Clock, "clockscreen=" + SpanConfig.ClockScreen, "audiodevice=" + AudioConfig.Device };
+                "musicviz=" + MusicConfig.Viz, "musicclock=" + MusicConfig.Clock, "clockscreen=" + SpanConfig.ClockScreen, "audiodevice=" + AudioConfig.Device,
+                "audiosensitivity=" + AudioConfig.Sensitivity };
             MusicConfig.SaveExtra(lines);
             if (RandomPool != null) lines.Add("randompool=" + string.Join(",", RandomPool.ToArray()));
             foreach (var kv in SceneFor) lines.Add("scene." + kv.Key + "=" + kv.Value);

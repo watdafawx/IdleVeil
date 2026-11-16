@@ -827,6 +827,7 @@ namespace IdleVeil
             meter = l.Add(new MusicMeter(), UI.S(84));
             l.Gap(4);
             BuildSource(l);
+            BuildSensitivity(l);
 
             bool random = MusicConfig.Viz == "random";
             if (!random) lastViz = MusicConfig.Viz;
@@ -954,9 +955,25 @@ namespace IdleVeil
                   new PushButton(Glyphs.Update, "Refresh", false, delegate { LoadDevices(); Window.QueueRebuild(); }));
         }
 
+        // Sensitivity: the dB window the bands are mapped onto. Deckviz has the same five steps.
+        // The slider previews live (the shared AudioFeed reads the value every frame); the meter
+        // right below shows what the visualizers get, so tuning is a matter of watching it.
+        void BuildSensitivity(Layout l)
+        {
+            l.Header("Sensitivity");
+            l.Row(Glyphs.Sensitivity, "Sensitivity",
+                  "How hard the visualizers react. Watch the meter: loud parts should reach near the top. Turn it up if the bars stay low, down if they are always maxed.",
+                  new Slider(1, 5, AudioConfig.Sensitivity, AudioConfig.SensitivityNames,
+                             delegate(int v) { AudioConfig.SetSensitivity(v); },
+                             delegate(int v) { AudioConfig.SetSensitivity(v); Changed(); }));
+            sensitivity = l.Add(new SensitivityMeter(this), SensitivityMeter.Height(UI));
+            l.Gap(8);
+        }
+
         List<AudioDevice> devices;
         AudioMeters meters;
         DeviceLevels levels;
+        SensitivityMeter sensitivity;
         string signature;
         int signatureAt;
 
@@ -1004,6 +1021,7 @@ namespace IdleVeil
             if (audio == null || meter == null) return;
             meter.Playing = audio.Read(meter.Bands, meter.Wave);
             meter.Invalidate();
+            if (sensitivity != null) sensitivity.Invalidate();
             if (meters != null) meters.Read(1f / 30f);
             if (levels != null) levels.Invalidate();
             // Devices plugged in or removed: rebuild the list (cheap: ids only, every 3 s).
@@ -1134,6 +1152,48 @@ namespace IdleVeil
                     int h = Math.Max(ui.S(2), (int)(v * maxH));
                     g.FillRectangle(br, left + i * (bw + ui.S(2)), baseY - h, bw, h);
                 }
+        }
+    }
+
+    // The bands the visualizers get after the sensitivity mapping: a wide, thin strip that makes
+    // tuning obvious while the slider is dragged. Painted live, like MusicMeter.
+    sealed class SensitivityMeter : Widget
+    {
+        readonly MusicPage page;
+
+        public SensitivityMeter(MusicPage page) { this.page = page; }
+
+        public override bool Dynamic { get { return true; } }
+        public static int Height(Ui ui) { return ui.S(76); }
+
+        public override void Paint(Graphics g, Ui ui)
+        {
+            ui.DrawCard(g, Bounds, Ui.Card);
+            int left = Bounds.X + ui.S(20), right = Bounds.Right - ui.S(20);
+            ui.Line(g, "Levels after sensitivity", ui.Caption, Ui.TextTertiary,
+                    new Rectangle(left, Bounds.Y + ui.S(8), right - left, ui.S(18)));
+            int top = Bounds.Y + ui.S(32), bottom = Bounds.Bottom - ui.S(12);
+            int h = Math.Max(ui.S(6), bottom - top);
+            using (var guide = new Pen(Color.FromArgb(52, 52, 52), 1f))
+                for (int k = 1; k <= 3; k++)
+                {
+                    int y = bottom - h * k / 4;
+                    g.DrawLine(guide, left, y, right, y);
+                }
+            AudioFeed feed = page.Feed;
+            float[] bands = feed != null ? feed.Bands : null;
+            const int n = AudioFrame.BandCount;
+            int gap = Math.Max(1, ui.S(2)), w = Math.Max(1, (right - left - gap * (n - 1)) / n);
+            bool playing = feed != null && feed.Playing;
+            using (var br = new SolidBrush(playing ? ui.Accent : Color.FromArgb(72, 72, 72)))
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    float v = bands != null ? bands[i] : 0f;
+                    int bh = Math.Max(ui.S(1), (int)(v * h));
+                    g.FillRectangle(br, left + i * (w + gap), bottom - bh, w, bh);
+                }
+            }
         }
     }
 

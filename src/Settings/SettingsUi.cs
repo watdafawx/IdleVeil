@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -197,52 +198,66 @@ namespace IdleVeil
             }
         }
 
-        // Text is drawn with GDI+ in grayscale (AntiAliasGridFit), not GDI ClearType. ClearType's
-        // colour fringes (orange on one side, blue on the other) read as a shadow on OLED panels
-        // and at small sizes; this looks like the Windows title bar instead. It is also much
-        // cheaper: GDI's TextRenderer locks the whole destination bitmap for every line.
-        static Graphics measureG;
-        static readonly StringFormat FmtLine, FmtGlyph, FmtWrap;
+        // Text is rasterised by GDI (the same hinted ClearType the Windows shell uses), then turned
+        // into a grayscale mask: only the green subpixel channel is kept. That keeps ClearType's
+        // crisp, grid-fitted stems while throwing away its orange/blue fringes, which read as a
+        // colour shadow on OLED panels. GDI+ DrawString with AntiAliasGridFit was tried and has no
+        // fringes either, but its unhinted small text looks noticeably softer than the title bar.
+        //
+        // Each line goes through a scratch bitmap and comes back as an alpha mask, so it composites
+        // correctly on any card, button or hover colour. Pages are cached (see Surface), so the cost
+        // is paid on rebuild, not per frame.
+        static Bitmap textScratch, textMask;
+        static readonly SolidBrush Black = new SolidBrush(Color.Black);
+        static readonly Size MaxMeasure = new Size(int.MaxValue, int.MaxValue);
 
-        static Ui()
+        static void EnsureTextScratch(int w, int h)
         {
-            FmtLine = Typo(false);
-            FmtLine.Trimming = StringTrimming.EllipsisCharacter;
-            FmtGlyph = Typo(false);
-            FmtGlyph.Alignment = StringAlignment.Center;
-            FmtGlyph.LineAlignment = StringAlignment.Center;
-            FmtWrap = Typo(true);
+            if (textScratch != null && textScratch.Width >= w && textScratch.Height >= h) return;
+            int nw = Math.Max(w, textScratch != null ? textScratch.Width : 0);
+            int nh = Math.Max(h, textScratch != null ? textScratch.Height : 0);
+            if (textScratch != null) { textScratch.Dispose(); textMask.Dispose(); }
+            textScratch = new Bitmap(nw, nh, PixelFormat.Format32bppArgb);
+            textMask = new Bitmap(nw, nh, PixelFormat.Format32bppArgb);
         }
 
-        static StringFormat Typo(bool wrap)
-        {
-            var sf = (StringFormat)StringFormat.GenericTypographic.Clone();
-            sf.FormatFlags &= ~StringFormatFlags.NoClip;   // stay inside the rectangle
-            sf.HotkeyPrefix = HotkeyPrefix.None;
-            sf.Trimming = StringTrimming.None;
-            if (!wrap) sf.FormatFlags |= StringFormatFlags.NoWrap;
-            return sf;
-        }
-
-        static Graphics MeasureGraphics()
-        {
-            if (measureG == null)
-            {
-                measureG = Graphics.FromImage(new Bitmap(1, 1));
-                measureG.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            }
-            return measureG;
-        }
-
-        public void DrawText(Graphics g, string s, Font f, Color c, Rectangle r, TextFormatFlags flags)
+        public unsafe void DrawText(Graphics g, string s, Font f, Color c, Rectangle r, TextFormatFlags flags)
         {
             if (string.IsNullOrEmpty(s) || r.Width <= 0 || r.Height <= 0) return;
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            bool wrap = (flags & TextFormatFlags.WordBreak) != 0;
-            StringFormat sf = wrap ? FmtWrap : (flags & TextFormatFlags.HorizontalCenter) != 0 ? FmtGlyph : FmtLine;
-            if (!wrap) sf.LineAlignment = (flags & TextFormatFlags.VerticalCenter) != 0 ? StringAlignment.Center : StringAlignment.Near;
-            using (var b = new SolidBrush(c))
-                g.DrawString(s, f, b, new RectangleF(r.X, r.Y, r.Width, r.Height), sf);
+            flags |= TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding;
+            int w = r.Width, h = r.Height;
+            EnsureTextScratch(w, h);
+            using (Graphics sg = Graphics.FromImage(textScratch))
+            {
+                sg.FillRectangle(Black, new Rectangle(0, 0, w, h));
+                TextRenderer.DrawText(sg, s, f, new Rectangle(0, 0, w, h), Color.White, flags);
+            }
+            var used = new Rectangle(0, 0, w, h);
+            BitmapData src = textScratch.LockBits(used, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            BitmapData dst = textMask.LockBits(used, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                int scale = c.A;
+                for (int y = 0; y < h; y++)
+                {
+                    byte* sp = (byte*)src.Scan0 + y * src.Stride;
+                    byte* dp = (byte*)dst.Scan0 + y * dst.Stride;
+                    for (int x = 0; x < w; x++)
+                    {
+                        int a = sp[x * 4 + 1] * scale / 255;   // green = coverage
+                        dp[x * 4 + 0] = c.B;
+                        dp[x * 4 + 1] = c.G;
+                        dp[x * 4 + 2] = c.R;
+                        dp[x * 4 + 3] = (byte)a;
+                    }
+                }
+            }
+            finally
+            {
+                textScratch.UnlockBits(src);
+                textMask.UnlockBits(dst);
+            }
+            g.DrawImage(textMask, new Rectangle(r.X, r.Y, w, h), used, GraphicsUnit.Pixel);
         }
 
         // One line, vertically centred in r.
@@ -259,15 +274,17 @@ namespace IdleVeil
         public Size Measure(string s, Font f)
         {
             if (string.IsNullOrEmpty(s)) return Size.Empty;
-            SizeF sz = MeasureGraphics().MeasureString(s, f, new SizeF(100000, 100000), FmtLine);
-            return new Size((int)Math.Ceiling(sz.Width) + 1, (int)Math.Ceiling(sz.Height) + 1);
+            Size sz = TextRenderer.MeasureText(s, f, MaxMeasure,
+                    TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+            return new Size(sz.Width + 1, sz.Height + 1);
         }
 
         public int WrapHeight(string s, Font f, int width)
         {
             if (string.IsNullOrEmpty(s)) return 0;
-            SizeF sz = MeasureGraphics().MeasureString(s, f, new SizeF(Math.Max(1, width), 100000), FmtWrap);
-            return (int)Math.Ceiling(sz.Height) + 1;
+            Size sz = TextRenderer.MeasureText(s, f, new Size(Math.Max(1, width), int.MaxValue),
+                    TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+            return sz.Height + 1;
         }
     }
 
@@ -279,7 +296,7 @@ namespace IdleVeil
         public const string Add = "\uE710", Delete = "\uE74D", Folder = "\uE8B7", Document = "\uE8A5", Info = "\uE946", Shuffle = "\uE8B1";
         public const string Cursor = "\uE7C9", Robot = "\uE99A", Video = "\uE714", Startup = "\uE7B5", Update = "\uE895", Gpu = "\uE950";
         public const string Monitor = "\uE7F8", Warning = "\uE7BA", Link = "\uE71B", Pause = "\uE769", Clock = "\uE917", Speaker = "\uE767";
-        public const string Star = "\uE734", Apps2 = "\uECAA", Copy = "\uE8C8";
+        public const string Star = "\uE734", Apps2 = "\uECAA", Copy = "\uE8C8", Sensitivity = "\uE9E9";
     }
 
     abstract class Widget
@@ -302,6 +319,11 @@ namespace IdleVeil
         public virtual void Click(Point p) { }
         public virtual void MouseMove(Point p) { }
         public virtual void MouseLeave() { }
+
+        // A widget dragged with the left button held (a slider), and the release that ends it.
+        public virtual bool CapturesDrag { get { return false; } }
+        public virtual void MouseDrag(Point p) { }
+        public virtual void DragFinished() { }
 
         // The widget under p (content coordinates) that should get the mouse, or null.
         public virtual Widget Hit(Point p) { return Interactive && Enabled && Bounds.Contains(p) ? this : null; }
@@ -326,7 +348,7 @@ namespace IdleVeil
     // Painting: the whole page is drawn once into a bitmap ("the cache"); a paint is then a blit
     // of the visible slice plus the few live parts (thumbnails, meters). Hover and clicks repaint
     // only their own region of the cache. That is what keeps scrolling and live previews at
-    // display rate: hand-drawn GDI+ text costs ~0.25 ms per line, far too much to redo per frame.
+    // display rate: rasterising text through a scratch bitmap is far too costly to redo per frame.
     sealed class Surface : Control
     {
         public readonly Ui Ui;
@@ -334,7 +356,7 @@ namespace IdleVeil
         public Color Back = Ui.Window;
         public int ContentHeight;
         int scroll, target;
-        Widget hot, pressed;
+        Widget hot, pressed, dragging;
         bool dragBar, barHot;
         int dragStartY, dragStartScroll;
         public event EventHandler Scrolled;
@@ -635,6 +657,12 @@ namespace IdleVeil
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
+            if (dragging != null)
+            {
+                try { dragging.MouseDrag(new Point(e.X, e.Y + scroll)); }
+                catch (Exception ex) { Program.Log("settings drag error: " + ex.Message); }
+                return;
+            }
             if (dragBar)
             {
                 Rectangle t = BarTrack, th = BarThumb;
@@ -678,12 +706,34 @@ namespace IdleVeil
             }
             SetHot(HitAt(e.Location));
             pressed = hot;
-            if (pressed != null) { pressed.Pressed = true; pressed.Invalidate(); }
+            if (pressed != null)
+            {
+                pressed.Pressed = true;
+                pressed.Invalidate();
+                if (pressed.CapturesDrag)
+                {
+                    dragging = pressed;
+                    Capture = true;
+                    try { pressed.MouseDrag(new Point(e.X, e.Y + scroll)); }
+                    catch (Exception ex) { Program.Log("settings drag error: " + ex.Message); }
+                }
+            }
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (dragging != null)
+            {
+                Widget d = dragging;
+                dragging = null;
+                Capture = false;
+                d.Pressed = false;
+                try { d.DragFinished(); }
+                catch (Exception ex) { Program.Log("settings drag error: " + ex.Message); }
+                d.Invalidate();
+                return;
+            }
             if (dragBar) { dragBar = false; Capture = false; Invalidate(); return; }
             Widget p = pressed;
             pressed = null;
@@ -994,6 +1044,90 @@ namespace IdleVeil
         }
 
         public override void Click(Point p) { if (OnClick != null) OnClick(); }
+    }
+
+    // A Windows 11 style stepped slider. The thumb follows the mouse while the button is held:
+    // Preview runs for every step (the live level meter reacts immediately without rebuilding the
+    // page) and Commit once on release, so the ini is written once per drag.
+    sealed class Slider : Widget, IMeasured
+    {
+        public readonly int Min, Max;
+        public int Value;
+        readonly string[] Labels;
+        readonly Action<int> Preview, Commit;
+        public int MinWidth = 260;
+
+        public Slider(int min, int max, int value, string[] labels, Action<int> preview, Action<int> commit)
+        {
+            Min = min; Max = max;
+            Value = Math.Max(min, Math.Min(max, value));
+            Labels = labels; Preview = preview; Commit = commit;
+        }
+
+        public override bool Interactive { get { return true; } }
+        public override bool CapturesDrag { get { return true; } }
+
+        int LabelWidth(Ui ui)
+        {
+            int w = 0;
+            foreach (string s in Labels) w = Math.Max(w, ui.Measure(s, ui.Body).Width);
+            return w;
+        }
+
+        public int MeasureWidth(Ui ui) { return ui.S(MinWidth) + LabelWidth(ui); }
+        public int MeasureHeight(Ui ui) { return ui.S(40); }
+
+        Rectangle Track(Ui ui)
+        {
+            int left = Bounds.X + ui.S(8);
+            int right = Bounds.Right - LabelWidth(ui) - ui.S(16);
+            int h = ui.S(4);
+            return new Rectangle(left, Bounds.Y + (Bounds.Height - h) / 2, Math.Max(ui.S(40), right - left), h);
+        }
+
+        int ThumbX(Ui ui)
+        {
+            Rectangle t = Track(ui);
+            int steps = Math.Max(1, Max - Min);
+            return t.X + t.Width * (Value - Min) / steps;
+        }
+
+        void SetFrom(Point p)
+        {
+            Rectangle t = Track(UI);
+            int steps = Math.Max(1, Max - Min);
+            float f = (p.X - t.X) / (float)Math.Max(1, t.Width);
+            int v = Math.Max(Min, Math.Min(Max, Min + (int)Math.Round(f * steps)));
+            if (v == Value) return;
+            Value = v;
+            Invalidate();
+            if (Preview != null) Preview(v);
+        }
+
+        public override void MouseDrag(Point p) { SetFrom(p); }
+        public override void DragFinished() { if (Commit != null) Commit(Value); }
+
+        public override void Paint(Graphics g, Ui ui)
+        {
+            Rectangle t = Track(ui);
+            int cy = t.Y + t.Height / 2;
+            int tx = ThumbX(ui);
+            ui.Fill(g, t, ui.SF(2), Color.FromArgb(84, 84, 84));
+            if (tx > t.X) ui.Fill(g, new Rectangle(t.X, t.Y, tx - t.X, t.Height), ui.SF(2), ui.Accent);
+            int steps = Math.Max(1, Max - Min);
+            for (int i = 1; i < steps; i++)
+            {
+                int x = t.X + t.Width * i / steps;
+                ui.Fill(g, new Rectangle(x - ui.S(1), cy - ui.S(1), ui.S(2), ui.S(2)), ui.SF(1), Color.FromArgb(120, 120, 120));
+            }
+            int d = Hot || Pressed ? ui.S(18) : ui.S(16);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var b = new SolidBrush(ui.Accent)) g.FillEllipse(b, tx - d / 2f, cy - d / 2f, d, d);
+            using (var b = new SolidBrush(ui.AccentText)) g.FillEllipse(b, tx - ui.S(3), cy - ui.S(3), ui.S(6), ui.S(6));
+            ui.DrawText(g, Labels[Value - Min], ui.BodyStrong, Ui.Text,
+                    new Rectangle(t.Right + ui.S(12), Bounds.Y, Bounds.Right - t.Right - ui.S(12), Bounds.Height),
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        }
     }
 
     // A coloured message strip (info or warning) with an icon.

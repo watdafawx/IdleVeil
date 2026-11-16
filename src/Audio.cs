@@ -143,7 +143,6 @@ namespace IdleVeil
         public const int BandCount = 64;
         public const int WaveCount = 512;
         const int FftSize = 2048;             // capture ring length
-        const float RangeDb = 40f;            // dB window mapped to 0..1
         const float SilenceMs = 500f;         // no packets this long: treat as silence
         const float PlayLevel = 0.03f;        // a band above this counts as sound
         const float HysteresisSeconds = 2f;   // sound / quiet time before Playing flips
@@ -357,6 +356,7 @@ namespace IdleVeil
 
         void Analyze(float dt)
         {
+            float rangeDb = AudioConfig.RangeDb;
             for (int i = 0; i < FftSize; i++)
             {
                 fftRe[i] = frame[i] * window[i];
@@ -382,7 +382,7 @@ namespace IdleVeil
             }
             ceilingDb = frameMax > ceilingDb ? frameMax : Math.Max(-70f, ceilingDb - 3f * dt);
             for (int i = 0; i < BandCount; i++)
-                target[i] = Clamp01((target[i] - (ceilingDb - RangeDb)) / RangeDb);
+                target[i] = Clamp01((target[i] - (ceilingDb - rangeDb)) / rangeDb);
         }
 
         static float Clamp01(float v) { return v < 0f ? 0f : v > 1f ? 1f : v; }
@@ -719,7 +719,9 @@ namespace IdleVeil
                 Program.Log("audio-test: " + s);
                 try { Console.WriteLine(s); } catch { }
             };
-            say("setting: audiodevice=" + AudioConfig.Effective + (AudioConfig.Override != null ? " (from --audio-device)" : ""));
+            say("setting: audiodevice=" + AudioConfig.Effective + (AudioConfig.Override != null ? " (from --audio-device)" : "")
+                + "  audiosensitivity=" + AudioConfig.Sensitivity + " (" + AudioConfig.SensitivityNames[AudioConfig.Sensitivity - 1]
+                + ", " + AudioConfig.RangeDb.ToString("0") + " dB)");
             var devices = AudioDevices.List();
             using (var meters = new AudioMeters(devices))
             {
