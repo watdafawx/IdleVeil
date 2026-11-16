@@ -11,7 +11,7 @@ IdleVeil shows a screensaver-style animation (Matrix rain, Starfield, Aurora, Fi
 - **Only real input counts.** Clicks and keystrokes injected by AI agents and automation tools don't keep the screen awake (this can be turned off for remote-control tools like Parsec or Sunshine).
 - **Controllers count as input** (Xbox pads, and other pads mapped through Steam Input or DS4Windows).
 - **Turns an OLED off for real.** It can remove one monitor from the desktop after the animation has shown for a while. The monitor sees "no signal" and goes into its own standby, where OLEDs run pixel cleaning, and no app or agent can wake it. Moving the mouse brings it back, with your windows where they were.
-- **Respects video playback.** It stays off while a fullscreen app asks Windows to keep the display on.
+- **Respects fullscreen apps.** It stays off while a fullscreen game or video is in front, and (with **Always**) while any windowed app asks Windows to keep the display on.
 - **Per-app exceptions.** Never shows while chosen apps (e.g. a game you watch AFK) are focused.
 - **Hides the mouse cursor** while the animation is showing (optional).
 - **A settings window** with live previews of every scene, a to-scale map of your monitors, and every option in one place. The tray icon stays small: Show now, Pause, Settings and Exit.
@@ -58,7 +58,7 @@ Everything else is set in the settings window. Changes apply at once (there's no
 | --- | --- |
 | **Scenes** | Live previews of every scene, grouped into Ambient, Music visualizers, Clocks and Classic (a note marks the scenes that react to sound). Click one to always show it, or pick **Random** and tick which scenes it may choose from. Music visualizers only join Random while something is playing |
 | **Screens** | A to-scale map of your monitors with their names, resolutions and a live preview of what each will show. Choose **Span** (one scene composed across every screen: the map shows the real span picture, and **Clock screen** picks where a span clock sits, by default the largest non-OLED screen), **Each** (its own copy per screen), **Mirror** (the same picture everywhere) or **Per screen**, where clicking a monitor picks its scene. The monitor that gets turned off is marked |
-| **Timing & OLED** | Idle time before it appears; which monitor to turn off (detach) and after how long, so OLEDs can run their pixel refresh; whether apps asking to keep the display on stop it (Fullscreen only, Always, Never); hide cursor; ignore input injected by other apps |
+| **Timing & OLED** | Idle time before it appears; which monitor to turn off (detach) and after how long, so OLEDs can run their pixel refresh; whether a fullscreen app (a game or video) stops it (Fullscreen apps, Always — also honours windowed apps that ask Windows to keep the display on — or Never); hide cursor; ignore input injected by other apps |
 | **Music** | Which visualizer Music mode shows while sound plays (one, or **Random** from a pool you tick; in Per screen mode each monitor can pick its own) and which clock when it's quiet; the **audio source** it listens to (the default output, the loudest device, or any playback or recording device, with live levels); **Sensitivity** (Low to Very high, with a live meter of what the visualizers get); a live "music detected" meter and a **Test** button (see [docs/music-scenes.md](docs/music-scenes.md)) |
 | **Apps** | Apps that stop the animation while they're in front. Add them from a list of running apps (the app you used last is suggested) |
 | **General** | Start with Windows, the GPU renderer (with its status, or why it fell back to GDI), automatic updates and **Check now**, the log and settings files, and About |
@@ -105,7 +105,7 @@ IdleVeil.exe [options]
                                chosen device's levels for 5 s
   --preview                    Show the animation once, then quit on input
   --settings                   Open the settings window (in the running copy, if any)
-  --ignore-display-requests    Show even while an app asks to keep the display on
+  --ignore-display-requests    Show even while a fullscreen app or a keep-display request is in effect
   --count-injected-input       Count input injected by other apps as activity
   --off-monitor <id>           Monitor to turn off, by its EDID id (e.g. AUS2740)
   --off-after <seconds>        How long the animation shows before that monitor
@@ -175,7 +175,7 @@ The source is limited to C# 5, since that's what the built-in compiler supports.
 - Scenes with a GPU version are drawn with Direct3D 11 at native resolution, one flip-model swap chain per monitor shown through DirectComposition, vsynced at 60 fps. If the GPU path can't start, the GDI renderer takes over (the reason is logged). Multi-monitor layout: `screens=` in the ini or the Screens page of the settings window; `scene.<EDID id>=<scene>` picks a scene per monitor in `perscreen` mode. See [docs/renderer.md](docs/renderer.md).
 - GPU ambient scenes: plasma, snow, fire, Game of Life, mystify and matrix rain (`src/Gpu/Scenes/`). Span mode composes every scene across all monitors: fire burns along the real bottom edges, snow falls through stacked screens and piles only on floors, matrix columns run from the top edges down through stacked screens, the spectrum is one wide row, centred scenes avoid the empty corners, and clocks sit whole on one screen with a dim ambient layer on the others. Music visualizers: scope, scope ring, radial, tunnel, ripples, waterfall, ridges, skyline, beat burst and Lissajous.
 - `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` hides it from screen capture (Windows 10 2004 or later).
-- Video playback is detected by checking whether any app has set `ES_DISPLAY_REQUIRED` while a fullscreen (not maximized) window has focus.
+- A fullscreen window in front (borderless games included) keeps the veil off; with **Always**, any app that has set `ES_DISPLAY_REQUIRED` does too. Maximized normal windows (ones with a title bar) do not count as fullscreen.
 - The cursor is hidden by temporarily swapping the system cursors for blank ones and restoring the user's cursor scheme afterwards (also on start-up, in case of a crash).
 
 ## Releasing

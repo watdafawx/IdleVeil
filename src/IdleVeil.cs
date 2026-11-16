@@ -90,9 +90,13 @@ namespace IdleVeil
         public const uint SRCCOPY = 0x00CC0020, BLACKNESS = 0x00000042;
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hwnd);
+        [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hwnd, int index);
         [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, System.Text.StringBuilder name, int max);
         [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+
+        const int GWL_STYLE = -16;
+        const int WS_CAPTION = 0x00C00000;   // WS_BORDER | WS_DLGFRAME
 
         const int SystemExecutionState = 16;
         const uint ES_DISPLAY_REQUIRED = 0x2;
@@ -140,16 +144,20 @@ namespace IdleVeil
         public static bool ForegroundIsFullscreen()
         {
             IntPtr h = GetForegroundWindow();
-            // A maximized window also reaches past the screen edges, so it doesn't count.
-            if (h == IntPtr.Zero || IsZoomed(h)) return false;
+            if (h == IntPtr.Zero) return false;
             var cls = new System.Text.StringBuilder(64);
             GetClassName(h, cls, 64);
             string c = cls.ToString();
             if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd") return false;
+            // A maximized normal window (one with a caption) reaches past the screen edges, so it
+            // doesn't count. A maximized borderless window (a borderless game) has no caption and
+            // should count.
+            if (IsZoomed(h) && (GetWindowLong(h, GWL_STYLE) & WS_CAPTION) != 0) return false;
             RECT r;
             if (!GetWindowRect(h, out r)) return false;
             Rectangle m = Screen.FromHandle(h).Bounds;
-            return r.L <= m.Left && r.T <= m.Top && r.R >= m.Right && r.B >= m.Bottom;
+            // DWM may inset a borderless window by a pixel or two.
+            return r.L <= m.Left + 2 && r.T <= m.Top + 2 && r.R >= m.Right - 2 && r.B >= m.Bottom - 2;
         }
     }
 
@@ -860,10 +868,16 @@ namespace IdleVeil
             return pad != 0 && (int)(pad - t) > 0 ? pad : t;
         }
 
+        // True while the veil must stay off because something in front is using the screen: a
+        // fullscreen app (a game in borderless mode, a video player) always counts when the mode is
+        // Fullscreen apps or Always, even if the app never asked Windows to keep the display on.
+        // With Always, a windowed app that asks for it counts too; Never ignores both.
         bool KeepDisplayOn()
         {
-            if (opt.Preview || opt.KeepOnFor == "never" || !Native.DisplayRequired()) return false;
-            return opt.KeepOnFor == "always" || Native.ForegroundIsFullscreen();
+            if (opt.Preview || opt.KeepOnFor == "never") return false;
+            bool fullscreen = Native.ForegroundIsFullscreen();
+            if (fullscreen) return true;
+            return opt.KeepOnFor == "always" && Native.DisplayRequired();
         }
 
         void MaybeDetach(int now)
@@ -893,7 +907,7 @@ namespace IdleVeil
                 long len = WatchLength();
                 bool logGrew = len != watchLen;
                 watchLen = len;
-                bool displayRequired = KeepDisplayOn();
+                bool keepOn = KeepDisplayOn();
 
                 if (form != null)
                 {
@@ -902,9 +916,13 @@ namespace IdleVeil
                     if (SystemInformation.VirtualScreen != form.Area || form.Broken) RebuildSaver();
                     // Ignore input in the first moment (e.g. the Enter key that launched a preview).
                     if (now - shownAt < graceMs) { inputAtShow = lastInput; return; }
-                    if (lastInput != inputAtShow || logGrew || displayRequired)
+                    if (lastInput != inputAtShow || logGrew || keepOn)
                     {
-                        AppLog.Info("veil", "veil hidden after " + (now - shownAt) / 1000 + " s: " + (lastInput != inputAtShow ? "input" + (input != null && input.Ok ? " (" + input.LastSource + ")" : "") : logGrew ? "watched file grew" : "fullscreen app keeps display on"));
+                        string why = lastInput != inputAtShow
+                            ? "input" + (input != null && input.Ok ? " (" + input.LastSource + ")" : "")
+                            : logGrew ? "watched file grew"
+                            : Native.ForegroundIsFullscreen() ? "fullscreen app in front" : "app keeps display on";
+                        AppLog.Info("veil", "veil hidden after " + (now - shownAt) / 1000 + " s: " + why);
                         HideSaver();
                         lastActivity = now;
                         idleStats.Reset();
@@ -922,7 +940,7 @@ namespace IdleVeil
                     lastIdlePerf = now;
                     AppLog.Perf("idle " + idleStats.Sample() + (paused ? " paused" : ""));
                 }
-                if (logGrew || displayRequired || appKeepsOn) lastActivity = now;
+                if (logGrew || keepOn || appKeepsOn) lastActivity = now;
                 if (paused && DateTime.Now >= pausedUntil) { paused = false; UpdateTooltip(); RaiseState(); }
                 if (paused) return;
                 int sinceInput = (int)((uint)now - lastInput);

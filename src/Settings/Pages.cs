@@ -796,8 +796,9 @@ namespace IdleVeil
             afterRow.Enabled = off != "";
 
             l.Header("Activity");
-            l.Row(Glyphs.Video, "Keep screen on for video", "Apps that ask Windows to keep the display on (video players, calls) stop the veil.",
-                  new DropDown(new[] { "fullscreen", "always", "never" }, new[] { "Fullscreen only", "Always", "Never" }, Opt.KeepOnFor,
+            l.Row(Glyphs.Video, "Keep screen on",
+                  "A fullscreen app in front (a game or a video) stops the veil. Always also stops it for windowed apps that ask Windows to keep the display on (video players, calls); Never ignores both.",
+                  new DropDown(new[] { "fullscreen", "always", "never" }, new[] { "Fullscreen apps", "Always", "Never" }, Opt.KeepOnFor,
                                delegate(string v) { Opt.KeepOnFor = v; Changed(); }));
             l.Row(Glyphs.Cursor, "Hide cursor", "Hide the mouse pointer while the veil is showing.",
                   new Toggle(Opt.HideCursor, delegate(bool on) { Opt.HideCursor = on; Changed(); }));
