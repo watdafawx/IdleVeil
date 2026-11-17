@@ -352,6 +352,7 @@ namespace IdleVeil
         {
             var waits = new IntPtr[outputs.Count];
             for (int i = 0; i < waits.Length; i++) waits[i] = outputs[i].Waitable;
+            var ready = new bool[waits.Length];   // waitable consumed, output not drawn yet
             var clock = Stopwatch.StartNew();
             long freq = Stopwatch.Frequency, period = freq / fpsCap;
             long last = clock.ElapsedTicks, lastRaise = last;
@@ -370,8 +371,21 @@ namespace IdleVeil
                         WaitForSingleObject(timer, 100);
                     else Thread.Sleep((int)((due - now) * 1000 / freq));
                 }
-                WaitForMultipleObjects((uint)waits.Length, waits, true, 100);
+                // Each output has its own frame-latency waitable. Wait until at least one is ready and then
+                // draw only the ready ones: a screen that stalls (asleep, in standby, a slow link) must not
+                // hold the others back. Waiting for all of them paced every screen at the slowest one's
+                // rate (the logs show 3.8 fps on screens that could do 60).
+                bool any = false;
+                int waitStart = Environment.TickCount;
+                while (!stop)
+                {
+                    for (int i = 0; i < waits.Length; i++)
+                        if (!ready[i] && WaitForSingleObject(waits[i], 0) == 0) { ready[i] = true; any = true; }
+                    if (any || Environment.TickCount - waitStart >= 100) break;
+                    Thread.Sleep(1);
+                }
                 if (stop) break;
+                if (!any) continue;
 
                 long start = clock.ElapsedTicks;
                 float dt = (start - last) / (float)freq;
@@ -386,6 +400,8 @@ namespace IdleVeil
                 host.Update(dt);
                 for (int i = 0; i < outputs.Count; i++)
                 {
+                    if (!ready[i]) continue;
+                    ready[i] = false;
                     host.Render(i, outputs[i].Rtv);
                     int hr = outputs[i].Swap.Present(1, 0);
                     if (hr == D3D.DXGI_ERROR_DEVICE_REMOVED || hr == D3D.DXGI_ERROR_DEVICE_RESET)
