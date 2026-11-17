@@ -916,7 +916,9 @@ namespace IdleVeil
                     if (SystemInformation.VirtualScreen != form.Area || form.Broken) RebuildSaver();
                     // Ignore input in the first moment (e.g. the Enter key that launched a preview).
                     if (now - shownAt < graceMs) { inputAtShow = lastInput; return; }
-                    if (lastInput != inputAtShow || logGrew || keepOn)
+                    // An exempt app that comes to the front while the veil is up (a game that takes focus
+                    // on its own) ends it too, so the monitor is never turned off underneath that app.
+                    if (lastInput != inputAtShow || logGrew || keepOn || appKeepsOn)
                     {
                         string why = lastInput != inputAtShow
                             ? "input" + (input != null && input.Ok ? " (" + input.LastSource + ")" : "")
@@ -937,6 +939,7 @@ namespace IdleVeil
 
                 if (now - lastIdlePerf >= IdlePerfMs)
                 {
+                            : appKeepsOn ? "exempt app in front (" + fgApp + ")"
                     lastIdlePerf = now;
                     AppLog.Perf("idle " + idleStats.Sample() + (paused ? " paused" : ""));
                 }
