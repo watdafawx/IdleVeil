@@ -245,8 +245,26 @@ namespace IdleVeil
         }
 
         // Log-spaced bands from 40 Hz to 16 kHz (deckviz's mapping).
+        // Devices running at 96 or 192 kHz (Voicemeeter, studio DACs) are averaged down to about 48 kHz
+        // before the FFT. The analysis window is a fixed 2048 samples, so at 192 kHz it spanned only
+        // 10 ms: the bass bands collapsed onto one bin and the waveform showed a 2.7 ms sliver.
+        int decim = 1, decN;
+        float decSum;
+
+        void Push(float mono)
+        {
+            decSum += mono;
+            if (++decN < decim) return;
+            ring[ringPos] = decSum / decim;
+            ringPos = (ringPos + 1) % FftSize;
+            decSum = 0f; decN = 0;
+        }
+
         void BuildBands(int rate)
         {
+            decim = Math.Max(1, (int)Math.Round(rate / 48000.0));
+            decSum = 0f; decN = 0;
+            rate /= decim;
             SampleRate = rate;
             float binHz = rate / (float)FftSize;
             for (int i = 0; i < BandCount; i++)
@@ -603,7 +621,7 @@ namespace IdleVeil
                     {
                         if (silent)
                         {
-                            for (int i = 0; i < n; i++) { ring[ringPos] = 0f; ringPos = (ringPos + 1) % FftSize; }
+                            for (int i = 0; i < n; i++) Push(0f);
                         }
                         else if (fmtTag == Wasapi.WAVE_FORMAT_IEEE_FLOAT && bits >= 32)
                         {
@@ -615,8 +633,7 @@ namespace IdleVeil
                                 float s = 0f;
                                 int o = i * channels;
                                 for (int c = 0; c < channels; c++) s += fBuf[o + c];
-                                ring[ringPos] = s / channels;
-                                ringPos = (ringPos + 1) % FftSize;
+                                Push(s / channels);
                             }
                         }
                         else if (bits == 16)
@@ -629,8 +646,7 @@ namespace IdleVeil
                                 float s = 0f;
                                 int o = i * channels;
                                 for (int c = 0; c < channels; c++) s += sBuf[o + c] / 32768f;
-                                ring[ringPos] = s / channels;
-                                ringPos = (ringPos + 1) % FftSize;
+                                Push(s / channels);
                             }
                         }
                         else if (bits == 32)
@@ -643,8 +659,7 @@ namespace IdleVeil
                                 float s = 0f;
                                 int o = i * channels;
                                 for (int c = 0; c < channels; c++) s += iBuf[o + c] / 2147483648f;
-                                ring[ringPos] = s / channels;
-                                ringPos = (ringPos + 1) % FftSize;
+                                Push(s / channels);
                             }
                         }
                         else
@@ -663,8 +678,7 @@ namespace IdleVeil
                                     if ((v & 0x800000) != 0) v |= unchecked((int)0xFF000000);
                                     s += v / 8388608f;
                                 }
-                                ring[ringPos] = s / channels;
-                                ringPos = (ringPos + 1) % FftSize;
+                                Push(s / channels);
                             }
                         }
                     }
