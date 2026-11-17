@@ -96,6 +96,7 @@ namespace IdleVeil
         readonly GpuScreen[] screens;
         readonly ScreenMode mode;
         readonly string[] sceneIds;
+        readonly GroupPlan[] groups;
         readonly int fpsCap;
         readonly Thread thread;
         readonly ManualResetEvent ready = new ManualResetEvent(false);
@@ -113,11 +114,12 @@ namespace IdleVeil
         static int disabledUntil;
         static bool disabled;
 
-        GpuVeil(GpuScreen[] screens, ScreenMode mode, string[] sceneIds, int fpsCap)
+        GpuVeil(GpuScreen[] screens, ScreenMode mode, string[] sceneIds, int fpsCap, GroupPlan[] groups)
         {
             this.screens = screens;
             this.mode = mode;
             this.sceneIds = sceneIds;
+            this.groups = groups;
             this.fpsCap = Math.Max(10, Math.Min(240, fpsCap));
             Area = SystemInformation.VirtualScreen;
             thread = new Thread(Run) { IsBackground = true, Name = "IdleVeil render" };
@@ -125,11 +127,11 @@ namespace IdleVeil
         }
 
         // Starts the overlay, or returns null (with the reason logged) so the caller can use GDI.
-        public static IVeil TryCreate(GpuScreen[] screens, ScreenMode mode, string[] sceneIds, int fpsCap)
+        public static IVeil TryCreate(GpuScreen[] screens, ScreenMode mode, string[] sceneIds, int fpsCap, GroupPlan[] groups = null)
         {
             if (disabled && Environment.TickCount - disabledUntil < 0) { LastError = "resting after a failure: " + LastError; return null; }
             disabled = false;
-            var v = new GpuVeil(screens, mode, sceneIds, fpsCap);
+            var v = new GpuVeil(screens, mode, sceneIds, fpsCap, groups);
             v.thread.Start();
             if (!v.ready.WaitOne(8000)) v.error = v.error ?? "timed out starting";
             if (v.error == null) { LastAdapter = v.gpu != null ? v.gpu.AdapterName : "?"; LastError = null; return v; }
@@ -259,7 +261,7 @@ namespace IdleVeil
             Marshal.ReleaseComObject(factory);
             D3D.Check(dcomp.Commit(), "DComp Commit");
 
-            host = new SceneHost(gpu, screens, mode, sceneIds, AudioInput.Open(sceneIds));
+            host = new SceneHost(gpu, screens, mode, sceneIds, AudioInput.Open(sceneIds), 0f, groups);
             timer = CreateWaitableTimerExW(IntPtr.Zero, null, 0x2 /* HIGH_RESOLUTION */, 0x1F0003);
             if (timer == IntPtr.Zero) timer = CreateWaitableTimerExW(IntPtr.Zero, null, 0, 0x1F0003);
 

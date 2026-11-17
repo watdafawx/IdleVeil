@@ -240,8 +240,11 @@ namespace IdleVeil
         public int GpuFps = 60;                   // GPU frame-rate cap (vsync paces below it)
         public string Screens = "each";           // span | each | mirror | perscreen (GPU renderer only)
         public Dictionary<string, string> SceneFor = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);   // perscreen: EDID id -> scene
+        public List<ScreenGroup> Groups = new List<ScreenGroup>();   // screens=groups: which screens share a scene
+        public string LeftOut = "black";          // screens in no group: black (still protected) | none (no veil there)
+        public Dictionary<string, Point> Place = new Dictionary<string, Point>(StringComparer.OrdinalIgnoreCase);   // EDID id -> where the screen sits in a span group (desktop coordinates)
         public bool ForceGdi;                     // never use the GPU renderer
-        public string RenderTestDir;              // --render-test: write PNGs and exit
+        public string RenderTestDir;             // --render-test: write PNGs and exit
         public int RenderTestFrames = 3;
         public bool Preview;
         public string KeepOnFor = "fullscreen";   // honour "keep the display on" requests: fullscreen | always | never
@@ -267,6 +270,8 @@ namespace IdleVeil
             try
             {
                 if (!File.Exists(SettingsPath)) return;
+                Groups.Clear();
+                Place.Clear();
                 foreach (string line in File.ReadAllLines(SettingsPath))
                 {
                     int eq = line.IndexOf('=');
@@ -279,6 +284,14 @@ namespace IdleVeil
                     else if (k == "clockscreen") SpanConfig.Set(k, v);
                     else if (k == "audiodevice") AudioConfig.Set(v);
                     else if (k == "audiosensitivity") { int n; if (int.TryParse(v, out n)) AudioConfig.SetSensitivity(n); }
+                    else if (k.StartsWith("group.")) { ScreenGroup g = ScreenGroup.Parse(v); if (g != null) Groups.Add(g); }
+                    else if (k == "leftout") LeftOut = v.ToLowerInvariant() == "none" ? "none" : "black";
+                    else if (k.StartsWith("place."))
+                    {
+                        string[] xy = v.Split(',');
+                        int px, py;
+                        if (xy.Length == 2 && int.TryParse(xy[0], out px) && int.TryParse(xy[1], out py)) Place[line.Substring(0, eq).Trim().Substring(6)] = new Point(px, py);
+                    }
                     else if (k.StartsWith("scene.") && v != "") SceneFor[line.Substring(0, eq).Trim().Substring(6)] = v.ToLowerInvariant();
                     else if (k == "idle") IdleSeconds = int.Parse(v);
                     else if (k == "hidecursor") HideCursor = v == "1" || v.ToLowerInvariant() == "true";
@@ -317,6 +330,9 @@ namespace IdleVeil
             MusicConfig.SaveExtra(lines);
             if (RandomPool != null) lines.Add("randompool=" + string.Join(",", RandomPool.ToArray()));
             foreach (var kv in SceneFor) lines.Add("scene." + kv.Key + "=" + kv.Value);
+            for (int i = 0; i < Groups.Count; i++) lines.Add("group." + (i + 1) + "=" + Groups[i].Serialize());
+            lines.Add("leftout=" + LeftOut);
+            foreach (var kv in Place) lines.Add("place." + kv.Key + "=" + kv.Value.X + "," + kv.Value.Y);
             return lines;
         }
 
@@ -923,6 +939,7 @@ namespace IdleVeil
                         string why = lastInput != inputAtShow
                             ? "input" + (input != null && input.Ok ? " (" + input.LastSource + ")" : "")
                             : logGrew ? "watched file grew"
+                            : appKeepsOn ? "exempt app in front (" + fgApp + ")"
                             : Native.ForegroundIsFullscreen() ? "fullscreen app in front" : "app keeps display on";
                         AppLog.Info("veil", "veil hidden after " + (now - shownAt) / 1000 + " s: " + why);
                         HideSaver();
@@ -939,7 +956,6 @@ namespace IdleVeil
 
                 if (now - lastIdlePerf >= IdlePerfMs)
                 {
-                            : appKeepsOn ? "exempt app in front (" + fgApp + ")"
                     lastIdlePerf = now;
                     AppLog.Perf("idle " + idleStats.Sample() + (paused ? " paused" : ""));
                 }
@@ -1002,8 +1018,21 @@ namespace IdleVeil
                 {
                     GpuScreen[] screens = GpuScreen.Current();
                     ScreenMode sm = ScreenModes.Parse(opt.Screens);
-                    var ids = new string[screens.Length];
-                    for (int i = 0; i < screens.Length; i++) ids[i] = sm == ScreenMode.PerScreen ? SceneFor(screens[i], mode) : mode;
+                    string[] ids;
+                    GroupPlan[] plan = null;
+                    if (sm == ScreenMode.Groups)
+                    {
+                        GpuScreen[] grouped = screens;
+                        ScreenGroups.Resolve(opt, ref grouped, mode, rng, out ids, out plan);
+                        if (grouped.Length > 0) screens = grouped;
+                        else { sm = ScreenMode.Each; plan = null; ids = null; }   // every screen is left out with leftout=none: show normally rather than nothing
+                    }
+                    else ids = null;
+                    if (ids == null)
+                    {
+                        ids = new string[screens.Length];
+                        for (int i = 0; i < screens.Length; i++) ids[i] = sm == ScreenMode.PerScreen ? SceneFor(screens[i], mode) : mode;
+                    }
                     string missing = Array.Find(ids, id => !GpuScenes.Has(id));
                     if (missing != null)
                     {
@@ -1012,7 +1041,7 @@ namespace IdleVeil
                     }
                     else
                     {
-                        IVeil v = GpuVeil.TryCreate(screens, sm, ids, opt.GpuFps);
+                        IVeil v = GpuVeil.TryCreate(screens, sm, ids, opt.GpuFps, plan);
                         if (v != null)
                         {
                             rendererStatus = "Working: last shown on " + GpuVeil.LastAdapter + " at " + DateTime.Now.ToString("t") + ".";

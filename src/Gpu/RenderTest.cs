@@ -69,7 +69,15 @@ namespace IdleVeil
                 ids[i] = mode == ScreenMode.PerScreen ? GpuScenes.Ids[(first + i) % (GpuScenes.Ids.Length - 1)] : scene;   // skip "blank"
 
             var synth = new SyntheticAudio();
-            var host = new SceneHost(gpu, screens, mode, ids, synth);
+            // Groups: every screen but the last spans one scene; the last is left out (black).
+            GroupPlan[] plan = null;
+            if (mode == ScreenMode.Groups && screens.Length > 1)
+            {
+                var members = new int[screens.Length - 1];
+                for (int i = 0; i < members.Length; i++) members[i] = i;
+                plan = new[] { new GroupPlan { Mode = ScreenMode.Span, Members = members } };
+            }
+            var host = new SceneHost(gpu, screens, mode, ids, synth, 0f, plan);
             var tex = new IntPtr[screens.Length];
             var rtv = new IntPtr[screens.Length];
             var staging = new IntPtr[screens.Length];

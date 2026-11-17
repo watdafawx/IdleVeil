@@ -289,9 +289,11 @@ namespace IdleVeil
                 l.Add(new InfoBar(msg, true), InfoBar.Height(UI, msg, l.Width));
                 l.Gap(12);
             }
+            if (mode == ScreenMode.Groups) ScreenGroups.ApplyPlacement(screens, Opt.Place);
             map = l.Add(new MonitorMap(this, screens), UI.S(360));
             l.Gap(8);
-            l.Text(mode == ScreenMode.PerScreen ? "Click a screen to choose its scene." : "Live preview of what each screen shows. In Span mode the scene really continues from one screen to the next: it stands on the real floors and keeps clear of the gaps.", Ui.TextTertiary);
+            l.Text(mode == ScreenMode.Groups ? "Drag a screen to move it. Where you drop it is where it sits inside a Span group, so a scene can continue across screens that aren't next to each other in Windows. Colours show the groups; a dark screen is left out." :
+                   mode == ScreenMode.PerScreen ? "Click a screen to choose its scene." : "Live preview of what each screen shows. In Span mode the scene really continues from one screen to the next: it stands on the real floors and keeps clear of the gaps.", Ui.TextTertiary);
 
             if (mode == ScreenMode.Span && !Opt.ForceGdi && screens.Length > 1)
             {
@@ -328,6 +330,8 @@ namespace IdleVeil
             }
             l.Y += h;
 
+            if (mode == ScreenMode.Groups) BuildGroups(l, screens);
+
             if (mode == ScreenMode.PerScreen)
             {
                 l.Header("Scene per screen");
@@ -343,11 +347,80 @@ namespace IdleVeil
             }
         }
 
+        public void Moved() { Changed(); }
+
+        static readonly string[] GroupModeValues = { "span", "each", "mirror" };
+        static readonly string[] GroupModeLabels = { "Span (one scene across them)", "Each (a copy per screen)", "Mirror (same picture on all)" };
+
+        void BuildGroups(Layout l, GpuScreen[] screens)
+        {
+            l.Header("Screens");
+            l.Text("Pick a group for each screen. Screens in a group share a scene, and Span makes it continue across them. Screens left out stay black, so an OLED there is still protected.", Ui.TextTertiary);
+            int slots = Math.Min(4, Math.Max(2, Opt.Groups.Count + 1));
+            var values = new List<string> { "-1" };
+            var labels = new List<string> { "Left out" };
+            for (int g = 0; g < slots; g++) { values.Add(g.ToString()); labels.Add("Group " + (g + 1)); }
+            for (int i = 0; i < screens.Length; i++)
+            {
+                GpuScreen s = screens[i];
+                string key = s.Key;
+                int cur = ScreenGroups.GroupOf(Opt, s);
+                if (cur >= slots) cur = -1;
+                l.Row(Glyphs.Monitor, (i + 1) + "  " + s.Name, s.Bounds.Width + " × " + s.Bounds.Height + (s.Primary ? "  ·  primary" : ""),
+                      new DropDown(values.ToArray(), labels.ToArray(), cur.ToString(), delegate(string v) { AssignScreen(key, int.Parse(v)); }) { MinWidth = 140 });
+            }
+            for (int g = 0; g < Opt.Groups.Count; g++)
+            {
+                ScreenGroup grp = Opt.Groups[g];
+                int count = 0;
+                foreach (GpuScreen s in screens) if (grp.Has(s.Key)) count++;
+                if (count == 0) continue;
+                int gi = g;
+                l.Header("Group " + (g + 1) + "  ·  " + count + (count == 1 ? " screen" : " screens"));
+                l.Row(Glyphs.Monitor, "Layout", count < 2 ? "Matters once the group has two or more screens." : "How the scene is spread over this group's screens.",
+                      new DropDown(GroupModeValues, GroupModeLabels, grp.Mode, delegate(string v) { grp.Mode = v; Changed(); }) { MinWidth = 220 });
+                string cs = grp.Scene;
+                var pick = new PushButton(Glyphs.ChevronDown, cs == "" ? "Same as Scenes page" : cs == "random" ? "Random" : SceneCatalog.Label(cs), false, null);
+                pick.OnClick = delegate { OpenGroupPicker(gi, Window.Content.ScreenRect(pick.Bounds)); };
+                l.Row(Glyphs.Monitor, "Scene", "What this group shows.", pick);
+            }
+            l.Header("Screens left out");
+            l.Row(Glyphs.Monitor, "Left-out screens", "Black keeps an OLED protected (it shows nothing, instead of your desktop). None draws no veil there at all.",
+                  new DropDown(new[] { "black", "none" }, new[] { "Black", "No veil" }, Opt.LeftOut, delegate(string v) { Opt.LeftOut = v; Changed(); }) { MinWidth = 160 });
+        }
+
+        void AssignScreen(string key, int group)
+        {
+            foreach (ScreenGroup g in Opt.Groups) g.Keys.RemoveAll(k => string.Equals(k, key, StringComparison.OrdinalIgnoreCase));
+            if (group >= 0)
+            {
+                while (Opt.Groups.Count <= group) Opt.Groups.Add(new ScreenGroup());
+                Opt.Groups[group].Keys.Add(key);
+            }
+            Changed();
+        }
+
+        void OpenGroupPicker(int group, Rectangle anchor)
+        {
+            ScreenGroup g = Opt.Groups[group];
+            var picker = new ScenePicker(Window, g.Scene == "" ? null : g.Scene, "Same as Scenes page", delegate(string id) { g.Scene = id ?? ""; Changed(); });
+            picker.Text = "Scene for group " + (group + 1);
+            picker.Open(anchor);
+        }
+
         // The scene a screen shows: its own (per-screen mode), else the main choice. null = "same as
         // the Scenes page" (only asked with own = true).
         public string SceneOf(GpuScreen s, bool own)
         {
             string id;
+            if (ScreenModes.Parse(Opt.Screens) == ScreenMode.Groups)
+            {
+                if (Opt.Groups.Count == 0) return own ? null : Opt.Mode;
+                int g = ScreenGroups.GroupOf(Opt, s);
+                if (g < 0) return own ? null : "blank";
+                string gs = Opt.Groups[g].Scene;
+                return gs == "" ? (own ? null : Opt.Mode) : gs;
+            }
             if (ScreenModes.Parse(Opt.Screens) == ScreenMode.PerScreen && Opt.SceneFor.TryGetValue(s.Key, out id) && GpuScenes.Has(id)) return id;
             return own ? null : Opt.Mode;
         }
@@ -393,7 +466,59 @@ namespace IdleVeil
         public override bool Dynamic { get { return true; } }
 
         bool PerScreen { get { return ScreenModes.Parse(page.Window.Host.Options.Screens) == ScreenMode.PerScreen && !page.Window.Host.Options.ForceGdi; } }
-        public override bool Interactive { get { return PerScreen; } }
+        bool Groups { get { return ScreenModes.Parse(page.Window.Host.Options.Screens) == ScreenMode.Groups && !page.Window.Host.Options.ForceGdi; } }
+        public override bool Interactive { get { return PerScreen || Groups; } }
+        public override bool CapturesDrag { get { return Groups; } }
+
+        static readonly Color[] GroupColors = { Color.FromArgb(96, 165, 250), Color.FromArgb(108, 203, 95), Color.FromArgb(255, 170, 90), Color.FromArgb(200, 130, 255) };
+        float mapScale = 1f;
+        Rectangle mapU;
+        int dragIndex = -1;
+        Point dragStart;
+        Rectangle dragOrigin, dragRect;   // desktop coordinates: where the dragged screen started, and where it is now
+
+        // Dragging a screen moves where it sits inside a span group. It snaps to the edges of the
+        // other screens (within about 60 px) so screens line up without fiddling.
+        public override void MouseDrag(Point p)
+        {
+            if (!Groups || rects == null) return;
+            if (dragIndex < 0)
+            {
+                dragIndex = hotIndex >= 0 ? hotIndex : IndexAt(p);
+                if (dragIndex < 0) return;
+                dragStart = p;
+                dragOrigin = dragRect = Screens[dragIndex].Layout;
+            }
+            float k = Math.Max(0.0001f, mapScale);
+            var r = new Rectangle(dragOrigin.X + (int)((p.X - dragStart.X) / k), dragOrigin.Y + (int)((p.Y - dragStart.Y) / k), dragOrigin.Width, dragOrigin.Height);
+            const int Snap = 60;
+            int bestX = Snap + 1, bestY = Snap + 1, dx = 0, dy = 0;
+            for (int i = 0; i < Screens.Length; i++)
+            {
+                if (i == dragIndex) continue;
+                Rectangle o = Screens[i].Layout;
+                foreach (int[] c in new[] { new[] { o.Right - r.Left, o.Right - r.Left }, new[] { o.Left - r.Right, o.Left - r.Right }, new[] { o.Left - r.Left, o.Left - r.Left }, new[] { o.Right - r.Right, o.Right - r.Right } })
+                    if (Math.Abs(c[0]) < bestX) { bestX = Math.Abs(c[0]); dx = c[0]; }
+                foreach (int[] c in new[] { new[] { o.Bottom - r.Top, 0 }, new[] { o.Top - r.Bottom, 0 }, new[] { o.Top - r.Top, 0 }, new[] { o.Bottom - r.Bottom, 0 } })
+                    if (Math.Abs(c[0]) < bestY) { bestY = Math.Abs(c[0]); dy = c[0]; }
+            }
+            if (bestX <= Snap) r.X += dx;
+            if (bestY <= Snap) r.Y += dy;
+            dragRect = r;
+            Screens[dragIndex].Layout = r;
+            rects = null;   // re-lay out the map around the new position
+            Invalidate();
+        }
+
+        public override void DragFinished()
+        {
+            if (dragIndex < 0) return;
+            GpuScreen s = Screens[dragIndex];
+            dragIndex = -1;
+            Options o = page.Window.Host.Options;
+            if (s.Layout.Location == s.Bounds.Location) o.Place.Remove(s.Key); else o.Place[s.Key] = s.Layout.Location;
+            page.Moved();
+        }
 
         public List<Thumb> Thumbs
         {
@@ -427,15 +552,19 @@ namespace IdleVeil
             thumbs = new Thumb[Screens.Length];
             spanThumb = null;
             if (Screens.Length == 0) return;
-            Rectangle u = Screens[0].Bounds;
-            foreach (GpuScreen s in Screens) u = Rectangle.Union(u, s.Bounds);
+            bool grp = Groups;
+            Rectangle u = grp ? Screens[0].Layout : Screens[0].Bounds;
+            foreach (GpuScreen s in Screens) u = Rectangle.Union(u, grp ? s.Layout : s.Bounds);
+            if (grp) u.Inflate(u.Width / 5, u.Height / 5);   // room to drag a screen around
+            if (dragIndex >= 0 && !mapU.IsEmpty) u = mapU; else mapU = u;   // the map keeps its scale while a screen is dragged
             int pad = ui.S(28);
             float k = Math.Min((Bounds.Width - pad * 2) / (float)u.Width, (Bounds.Height - pad * 2) / (float)u.Height);
+            mapScale = k;
             int ox = Bounds.X + (Bounds.Width - (int)(u.Width * k)) / 2, oy = Bounds.Y + (Bounds.Height - (int)(u.Height * k)) / 2;
             int g = ui.S(3);   // the gap between screens, like Display settings
             for (int i = 0; i < Screens.Length; i++)
             {
-                Rectangle b = Screens[i].Bounds;
+                Rectangle b = grp ? Screens[i].Layout : Screens[i].Bounds;
                 var r = new Rectangle(ox + (int)((b.X - u.X) * k) + g / 2, oy + (int)((b.Y - u.Y) * k) + g / 2, (int)(b.Width * k) - g, (int)(b.Height * k) - g);
                 rects[i] = r;
                 string scene = page.SceneOf(Screens[i], false);
@@ -496,7 +625,9 @@ namespace IdleVeil
                 ui.MaskCorners(g, inner, ui.SF(4), Color.FromArgb(12, 12, 12));
                 ui.MaskCorners(g, r, ui.SF(6), Color.FromArgb(28, 28, 28));
                 bool off = opt.OffMonitor != "" && string.Equals(opt.OffMonitor, s.Id, StringComparison.OrdinalIgnoreCase);
-                ui.Border(g, r, ui.SF(6), hot ? ui.Accent : off ? Ui.Mix(ui.Accent, Color.Black, 0.35f) : Color.FromArgb(70, 70, 70), hot ? ui.SF(2) : 1f);
+                int grpIndex = Groups && opt.Groups.Count > 0 ? ScreenGroups.GroupOf(opt, s) : -1;
+                Color edge = grpIndex >= 0 ? GroupColors[grpIndex % GroupColors.Length] : Color.FromArgb(70, 70, 70);
+                ui.Border(g, r, ui.SF(6), hot ? ui.Accent : off ? Ui.Mix(ui.Accent, Color.Black, 0.35f) : edge, hot || grpIndex >= 0 ? ui.SF(2) : 1f);
 
                 // number
                 var num = new Rectangle(r.X + ui.S(8), r.Y + ui.S(8), ui.S(24), ui.S(24));
@@ -516,6 +647,11 @@ namespace IdleVeil
                 // name, resolution, scene
                 string line2 = s.Bounds.Width + " \u00D7 " + s.Bounds.Height + (s.Primary ? "  \u00B7  primary" : "");
                 string line3 = scene == null ? null : scene == "random" ? "Random" : SceneCatalog.Label(scene);
+                if (Groups && opt.Groups.Count > 0)
+                {
+                    int gi = ScreenGroups.GroupOf(opt, s);
+                    line3 = gi < 0 ? "Left out (" + (opt.LeftOut == "none" ? "no veil" : "black") + ")" : "Group " + (gi + 1) + "  ·  " + opt.Groups[gi].Mode + "  ·  " + (line3 ?? "");
+                }
                 int lines = line3 != null ? 3 : 2;
                 int lh = ui.S(17);
                 var label = new Rectangle(r.X + ui.S(8), r.Bottom - ui.S(8) - lines * lh - ui.S(8), Math.Min(r.Width - ui.S(16), ui.S(230)), lines * lh + ui.S(8));
@@ -551,6 +687,7 @@ namespace IdleVeil
 
         public override void Click(Point p)
         {
+            if (Groups) return;
             int i = IndexAt(p);
             if (i >= 0) page.OpenPicker(i, Surface.ScreenRect(rects[i]));
         }
@@ -575,6 +712,7 @@ namespace IdleVeil
                 case ScreenMode.Span: return "Span";
                 case ScreenMode.Mirror: return "Mirror";
                 case ScreenMode.PerScreen: return "Per screen";
+                case ScreenMode.Groups: return "Groups";
                 default: return "Each";
             }
         }
@@ -586,6 +724,7 @@ namespace IdleVeil
                 case ScreenMode.Span: return "One scene stretched across every screen.";
                 case ScreenMode.Mirror: return "The same picture on every screen.";
                 case ScreenMode.PerScreen: return "Choose a scene for each screen.";
+                case ScreenMode.Groups: return "Span some screens, leave others out.";
                 default: return "Its own copy of the scene on each screen.";
             }
         }
@@ -643,18 +782,20 @@ namespace IdleVeil
                         float w = big.Bounds.Width * kk, h = big.Bounds.Height * kk;
                         grad = new RectangleF(r.X + (r.Width - w) / 2, r.Y + (r.Height - h) / 2, w, h);
                     }
+                    else if (mode == ScreenMode.Groups && i < screens.Length - 1) grad = span;
                     else grad = r;
+                    if (mode == ScreenMode.Groups && i == screens.Length - 1 && screens.Length > 1) { c0 = Color.FromArgb(34, 34, 34); c1 = c0; }
                     if (mode == ScreenMode.PerScreen) { c0 = Enabled ? per[i % per.Length] : Ui.TextDisabled; c1 = Color.FromArgb(40, c0); }
                     g.SetClip(path);
                     using (var lb = new LinearGradientBrush(new RectangleF(grad.X - 1, grad.Y - 1, grad.Width + 2, grad.Height + 2), c0, c1, 35f))
                         g.FillRectangle(lb, grad);
-                    if (mode == ScreenMode.Mirror || mode == ScreenMode.Each)
+                    if (mode == ScreenMode.Mirror || mode == ScreenMode.Each || (mode == ScreenMode.Groups && i == screens.Length - 1 && screens.Length > 1))
                     {
                         // the same "subject" in each copy
                         float d = Math.Min(grad.Width, grad.Height) * 0.35f;
                         using (var dot = new SolidBrush(Color.FromArgb(220, 255, 255, 255))) g.FillEllipse(dot, grad.X + grad.Width * 0.3f - d / 2, grad.Y + grad.Height * 0.5f - d / 2, d, d);
                     }
-                    else if (mode == ScreenMode.Span)
+                    else if (mode == ScreenMode.Span || mode == ScreenMode.Groups)
                     {
                         float d = span.Height * 0.3f;
                         using (var dot = new SolidBrush(Color.FromArgb(220, 255, 255, 255))) g.FillEllipse(dot, span.X + span.Width * 0.55f - d / 2, span.Y + span.Height * 0.25f - d / 2, d, d);

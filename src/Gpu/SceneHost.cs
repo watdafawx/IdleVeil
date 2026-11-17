@@ -15,11 +15,11 @@ using System.Windows.Forms;
 
 namespace IdleVeil
 {
-    enum ScreenMode { Span, Each, Mirror, PerScreen }
+    enum ScreenMode { Span, Each, Mirror, PerScreen, Groups }
 
     static class ScreenModes
     {
-        public static readonly string[] Names = { "span", "each", "mirror", "perscreen" };
+        public static readonly string[] Names = { "span", "each", "mirror", "perscreen", "groups" };
 
         public static ScreenMode Parse(string s)
         {
@@ -28,6 +28,7 @@ namespace IdleVeil
                 case "span": return ScreenMode.Span;
                 case "mirror": return ScreenMode.Mirror;
                 case "perscreen": case "per-screen": return ScreenMode.PerScreen;
+                case "groups": return ScreenMode.Groups;
                 default: return ScreenMode.Each;
             }
         }
@@ -41,6 +42,7 @@ namespace IdleVeil
                 case ScreenMode.Span: return "Span (one scene across all screens)";
                 case ScreenMode.Mirror: return "Mirror (same picture everywhere)";
                 case ScreenMode.PerScreen: return "Per screen (choose below)";
+                case ScreenMode.Groups: return "Groups (span some screens, leave others out)";
                 default: return "Each (a copy per screen)";
             }
         }
@@ -54,6 +56,7 @@ namespace IdleVeil
         public string Id;       // EDID id like AUS2740 ("" if unknown)
         public string Name;     // friendly name like PG27AQDP
         public bool Primary;
+        public Rectangle Layout;   // where the screen sits in a span group's world: Bounds, unless the user moved it (place.<id>=x,y)
 
         public string Key { get { return Id != "" ? Id : Device.TrimStart('\\', '.'); } }
 
@@ -88,7 +91,7 @@ namespace IdleVeil
                 ids.TryGetValue(all[i].DeviceName, out info);
                 list[i] = new GpuScreen
                 {
-                    Bounds = all[i].Bounds, Device = all[i].DeviceName, Primary = all[i].Primary,
+                    Bounds = all[i].Bounds, Layout = all[i].Bounds, Device = all[i].DeviceName, Primary = all[i].Primary,
                     Id = info != null ? info.Id : "", Name = info != null ? info.Name : all[i].DeviceName,
                 };
             }
@@ -136,6 +139,14 @@ namespace IdleVeil
         }
     }
 
+    // One group of screens in Groups mode: its own screen mode and the screens (indexes into the
+    // host's screen list) that belong to it. The scene comes from sceneIds of its members.
+    sealed class GroupPlan
+    {
+        public ScreenMode Mode;   // Span, Each or Mirror
+        public int[] Members;
+    }
+
     sealed class SceneHost : IDisposable
     {
         sealed class Instance
@@ -173,7 +184,7 @@ namespace IdleVeil
         // screens: real monitors; sceneIds: the scene for each (all equal except in perscreen mode).
         // minWorldU: thumbnails (settings window) draw World-layout scenes (stars, snow, fireflies) at
         // least this big, so a tiny preview shows a close-up instead of single pixels.
-        public SceneHost(Gpu gpu, GpuScreen[] screens, ScreenMode mode, string[] sceneIds, IAudioSource audioSource, float minWorldU = 0f)
+        public SceneHost(Gpu gpu, GpuScreen[] screens, ScreenMode mode, string[] sceneIds, IAudioSource audioSource, float minWorldU = 0f, GroupPlan[] groups = null)
         {
             this.gpu = gpu;
             this.minWorldU = minWorldU;
@@ -182,6 +193,34 @@ namespace IdleVeil
             targets = new Target[screens.Length];
             fade = new FullscreenPass(gpu, "float4 PS(float4 pos : SV_Position) : SV_Target { return float4(0, 0, 0, 1.0 - Fade); }");
 
+            if (mode == ScreenMode.Groups && groups != null)
+            {
+                var done = new bool[screens.Length];
+                foreach (GroupPlan g in groups)
+                {
+                    if (g.Members == null || g.Members.Length == 0) continue;
+                    var sub = new GpuScreen[g.Members.Length];
+                    var ids = new string[g.Members.Length];
+                    for (int k = 0; k < sub.Length; k++) { sub[k] = screens[g.Members[k]]; ids[k] = sceneIds[g.Members[k]]; done[g.Members[k]] = true; }
+                    Build(sub, g.Members, g.Mode == ScreenMode.Groups || g.Mode == ScreenMode.PerScreen ? ScreenMode.Each : g.Mode, ids);
+                }
+                for (int i = 0; i < screens.Length; i++)   // a screen no group claimed: black
+                    if (!done[i]) Build(new[] { screens[i] }, new[] { i }, ScreenMode.Each, new[] { "blank" });
+                Mode = ScreenMode.Groups;
+            }
+            else
+            {
+                var map = new int[screens.Length];
+                for (int i = 0; i < map.Length; i++) map[i] = i;
+                Mode = Build(screens, map, mode == ScreenMode.Groups ? ScreenMode.Each : mode, sceneIds);
+            }
+        }
+
+        // Sets up the scene instances and render views for `screens`, a subset of the host's screens
+        // (map[k] is the index of screens[k] in the full list). Returns the mode actually used: span
+        // falls back to each for scenes that can't span.
+        ScreenMode Build(GpuScreen[] screens, int[] map, ScreenMode mode, string[] sceneIds)
+        {
             if (mode != ScreenMode.PerScreen)
                 for (int i = 1; i < sceneIds.Length; i++) sceneIds[i] = sceneIds[0];
             if (mode == ScreenMode.Span)
@@ -190,24 +229,24 @@ namespace IdleVeil
                 if (probe == null || probe.Layout == SceneLayout.PerScreen) mode = ScreenMode.Each;
                 if (probe != null) probe.Dispose();
             }
-            Mode = mode;
 
             if (mode == ScreenMode.Span)
             {
-                Rectangle u = screens[0].Bounds;
+                // The world is the screens' Layout rectangles: their desktop position, or where the user placed them.
+                Rectangle u = screens[0].Layout;
                 float maxH = 0;
                 var rects = new RectF[screens.Length];
                 for (int i = 0; i < screens.Length; i++)
                 {
-                    u = Rectangle.Union(u, screens[i].Bounds);
+                    u = Rectangle.Union(u, screens[i].Layout);
                     maxH = Math.Max(maxH, screens[i].Bounds.Height);
-                    rects[i] = ToRect(screens[i].Bounds);
+                    rects[i] = ToRect(screens[i].Layout);
                 }
                 var keys = new string[screens.Length];
                 for (int i = 0; i < screens.Length; i++) keys[i] = screens[i].Key;
                 Instance inst = Make(sceneIds[0], ToRect(u), rects, maxH / 1080f, mode, keys, SpanConfig.PickClockScreen(screens));
                 for (int i = 0; i < screens.Length; i++)
-                    targets[i] = new Target { Inst = inst, View = new RenderView { View = rects[i], Viewport = Pixels(screens[i].Bounds.Size), Index = i } };
+                    targets[map[i]] = new Target { Inst = inst, View = new RenderView { View = rects[i], Viewport = Pixels(screens[i].Bounds.Size), Index = i } };
             }
             else if (mode == ScreenMode.Mirror)
             {
@@ -225,7 +264,7 @@ namespace IdleVeil
                     float k = Math.Min(sz.Width / world.W, sz.Height / world.H);
                     float w = (float)Math.Round(world.W * k), h = (float)Math.Round(world.H * k);
                     var vp = new RectF((float)Math.Floor((sz.Width - w) / 2), (float)Math.Floor((sz.Height - h) / 2), w, h);
-                    targets[i] = new Target { Inst = inst, View = new RenderView { View = world, Viewport = vp, Index = i } };
+                    targets[map[i]] = new Target { Inst = inst, View = new RenderView { View = world, Viewport = vp, Index = i } };
                 }
             }
             else
@@ -235,9 +274,10 @@ namespace IdleVeil
                     Size sz = screens[i].Bounds.Size;
                     var world = new RectF(0, 0, sz.Width, sz.Height);
                     Instance inst = Make(sceneIds[i], world, new[] { world }, sz.Height / 1080f, mode, new[] { screens[i].Key }, 0);
-                    targets[i] = new Target { Inst = inst, View = new RenderView { View = world, Viewport = Pixels(sz), Index = i } };
+                    targets[map[i]] = new Target { Inst = inst, View = new RenderView { View = world, Viewport = Pixels(sz), Index = i } };
                 }
             }
+            return mode;
         }
 
         static RectF ToRect(Rectangle r) { return new RectF(r.X, r.Y, r.Width, r.Height); }
