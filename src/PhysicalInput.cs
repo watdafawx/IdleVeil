@@ -21,6 +21,9 @@ namespace IdleVeil
         const uint RIM_TYPEMOUSE = 0, RIM_TYPEKEYBOARD = 1;
         // Mouse movement smaller than this (in raw counts) per event is treated as sensor jitter.
         const int JitterCounts = 3;
+        const uint JitterWindowMs = 300;
+        int jitterSum;
+        uint jitterSince;
 
         static readonly int HeaderSize = 8 + 2 * IntPtr.Size;   // RAWINPUTHEADER: dwType, dwSize, hDevice, wParam
         IntPtr buffer = Marshal.AllocHGlobal(256);
@@ -77,8 +80,13 @@ namespace IdleVeil
                 ushort buttons = (ushort)Marshal.ReadInt16(buffer, d + 4);     // usButtonFlags
                 int dx = Marshal.ReadInt32(buffer, d + 12), dy = Marshal.ReadInt32(buffer, d + 16);
                 bool absolute = (flags & 1) != 0;                               // MOUSE_MOVE_ABSOLUTE (tablets, pens)
-                if (buttons != 0 || absolute || Math.Abs(dx) + Math.Abs(dy) >= JitterCounts)
+                // A slow nudge arrives as many 1-2 count events. Sum them over a short window so
+                // it still counts, while a lone sensor twitch (one tiny event) does not.
+                if ((uint)(now - jitterSince) > JitterWindowMs) { jitterSum = 0; jitterSince = now; }
+                jitterSum += Math.Abs(dx) + Math.Abs(dy);
+                if (buttons != 0 || absolute || jitterSum >= JitterCounts)
                 {
+                    jitterSum = 0;
                     LastPhysicalTick = now;
                     LastSource = "mouse " + DeviceName(device) + " dx=" + dx + " dy=" + dy + " buttons=" + buttons + " flags=" + flags;
                 }
