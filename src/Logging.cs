@@ -370,7 +370,7 @@ namespace IdleVeil
             if (l.StartsWith("veil") || l.StartsWith("turn-off") || l.StartsWith("stats")) return "veil";
             if (l.StartsWith("settings") || l.StartsWith("autostart") || l.StartsWith("open ")) return "settings";
             if (l.StartsWith("detach") || l.StartsWith("reattach") || l.StartsWith("detached") || l.StartsWith("reattached")
-                || l.StartsWith("restored") || l.StartsWith("recovered") || l.StartsWith("screen")) return "display";
+                || l.StartsWith("standby") || l.StartsWith("recovered") || l.StartsWith("restored") || l.StartsWith("screen")) return "display";
             if (l.StartsWith("update") || l.StartsWith("installing update")) return "update";
             if (l.StartsWith("controller") || l.StartsWith("raw input")) return "input";
             if (l.StartsWith("thumb") || l.StartsWith("preview")) return "thumbs";

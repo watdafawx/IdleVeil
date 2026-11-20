@@ -10,7 +10,7 @@ IdleVeil shows a screensaver-style animation (Matrix rain, Starfield, Aurora, Fi
 - **Never steals focus.** Clicks pass straight through, and keyboard focus stays where it was.
 - **Only real input counts.** Clicks and keystrokes injected by AI agents and automation tools don't keep the screen awake (this can be turned off for remote-control tools like Parsec or Sunshine).
 - **Controllers count as input** (Xbox pads, and other pads mapped through Steam Input or DS4Windows).
-- **Turns an OLED off for real.** It can remove one monitor from the desktop after the animation has shown for a while. The monitor sees "no signal" and goes into its own standby, where OLEDs run pixel cleaning, and no app or agent can wake it. Moving the mouse brings it back, with your windows where they were.
+- **Turns an OLED off for real.** After the animation has shown for a while it can turn off any number of screens, two ways: a **normal standby** sent to each monitor over DDC/CI (the same command its power button uses, so the desktop never moves) or, as an option, **detaching** them from the desktop, where the monitor sees "no signal", can't be woken by anything in Windows, and OLEDs run their pixel cleaning. Input brings them back, with your windows where they were.
 - **Respects fullscreen apps.** It stays off while a fullscreen game or video is in front, and (with **Always**) while any windowed app asks Windows to keep the display on.
 - **Per-app exceptions.** Never shows while chosen apps (e.g. a game you watch AFK) are focused.
 - **Hides the mouse cursor** while the animation is showing (optional).
@@ -58,7 +58,7 @@ Everything else is set in the settings window. Changes apply at once (there's no
 | --- | --- |
 | **Scenes** | Live previews of every scene, grouped into Ambient, Music visualizers, Clocks and Classic (a note marks the scenes that react to sound). Click one to always show it, or pick **Random** and tick which scenes it may choose from. Music visualizers only join Random while something is playing |
 | **Screens** | A to-scale map of your monitors with their names, resolutions and a live preview of what each will show. Choose **Span** (one scene composed across every screen: the map shows the real span picture, and **Clock screen** picks where a span clock sits, by default the largest non-OLED screen), **Each** (its own copy per screen), **Mirror** (the same picture everywhere) or **Per screen**, where clicking a monitor picks its scene. The monitor that gets turned off is marked |
-| **Timing & OLED** | Idle time before it appears; which monitor to turn off (detach) and after how long, so OLEDs can run their pixel refresh; whether a fullscreen app (a game or video) stops it (Fullscreen apps, Always — also honours windowed apps that ask Windows to keep the display on — or Never); hide cursor; ignore input injected by other apps |
+| **Timing & OLED** | Idle time before it appears; which screens to turn off (tick any number) and after how long, and how they turn off (**Normal standby**, a DDC/CI power-off like the monitor's own button, or **Detach from desktop**, the old no-signal method so OLEDs can run their pixel refresh). Standby can also wait while an app asks Windows to keep the display on (the same thing `powercfg /requests` lists), and can name those apps with **gsudo** instead of running as admin. Whether a fullscreen app (a game or video) stops it (Fullscreen apps, Always — also honours windowed apps that ask Windows to keep the display on — or Never); hide cursor; ignore input injected by other apps |
 | **Music** | Which visualizer Music mode shows while sound plays (one, or **Random** from a pool you tick; in Per screen mode each monitor can pick its own) and which clock when it's quiet; the **audio source** it listens to (the default output, the loudest device, or any playback or recording device, with live levels); **Sensitivity** (Low to Very high, with a live meter of what the visualizers get); a live "music detected" meter and a **Test** button (see [docs/music-scenes.md](docs/music-scenes.md)) |
 | **Apps** | Apps that stop the animation while they're in front. Add them from a list of running apps (the app you used last is suggested) |
 | **General** | Start with Windows, the GPU renderer (with its status, or why it fell back to GDI), automatic updates and **Check now**, the log and settings files, and About |
@@ -107,9 +107,14 @@ IdleVeil.exe [options]
   --settings                   Open the settings window (in the running copy, if any)
   --ignore-display-requests    Show even while a fullscreen app or a keep-display request is in effect
   --count-injected-input       Count input injected by other apps as activity
-  --off-monitor <id>           Monitor to turn off, by its EDID id (e.g. AUS2740)
-  --off-after <seconds>        How long the animation shows before that monitor
-                               is turned off (default 300)
+  --off-monitor <ids>          Screens to turn off, by EDID id (e.g. AUS2740,SAM0DC9),
+                               comma-separated for several
+  --off-mode <mode>            How they turn off: standby (default, a DDC/CI power-off
+                               per screen) or detach (removed from the desktop)
+  --off-after <seconds>        How long the animation shows before those screens
+                               are turned off (default 300)
+  --power-test                 List the screens, whether each answers DDC power
+                               control, and the current powercfg /requests entries
   --exit                       Tell a running IdleVeil to quit (with --preview: a running preview)
 ```
 
@@ -170,7 +175,8 @@ The source is limited to C# 5, since that's what the built-in compiler supports.
 ## How it works
 
 - Idle time comes from Raw Input. Injected input (`SendInput`) arrives without a source device, so it's ignored; real devices always have one. With "Ignore input from apps" off, `GetLastInputInfo` is used instead, which sees both. Controllers are polled through XInput.
-- A monitor is turned off by removing it from the display layout with `SetDisplayConfig`, never saving that layout to Windows' display database. The previous layout and window placements are restored on return. It waits until no app has injected input for a minute, so an agent clicking on that monitor isn't disturbed mid-task. If IdleVeil is killed while a monitor is off, the next start brings it back.
+- Screens are turned off after the animation in one of two ways. **Normal standby** sends the monitor's own DDC/CI power command (VCP 0xD6) to each picked screen, so the desktop layout never changes; if a screen doesn't answer DDC (some KVMs, adapters and monitors don't) it is left alone, and when every screen was picked the whole-display standby broadcast is used instead. **Detach** removes them from the display layout with `SetDisplayConfig`, never saving that layout to Windows' display database; the previous layout and window placements are restored on return. Detach waits until no app has injected input for a minute, so an agent clicking on that monitor isn't disturbed mid-task. If IdleVeil is killed while screens are off, the next start puts them back.
+- Before a standby, with **Wait for apps** on, IdleVeil checks whether an app has asked Windows to keep the display on (`powercfg /requests`, which needs admin rights to name them) and waits instead of turning the screen off underneath it.
 - The overlay is a topmost, layered, click-through (`WS_EX_TRANSPARENT`), non-activating window.
 - Scenes with a GPU version are drawn with Direct3D 11 at native resolution, one flip-model swap chain per monitor shown through DirectComposition, vsynced at 60 fps. If the GPU path can't start, the GDI renderer takes over (the reason is logged). Multi-monitor layout: `screens=` in the ini or the Screens page of the settings window; `scene.<EDID id>=<scene>` picks a scene per monitor in `perscreen` mode. See [docs/renderer.md](docs/renderer.md).
 - GPU ambient scenes: plasma, snow, fire, Game of Life, mystify and matrix rain (`src/Gpu/Scenes/`). Span mode composes every scene across all monitors: fire burns along the real bottom edges, snow falls through stacked screens and piles only on floors, matrix columns run from the top edges down through stacked screens, the spectrum is one wide row, centred scenes avoid the empty corners, and clocks sit whole on one screen with a dim ambient layer on the others. Music visualizers: scope, scope ring, radial, tunnel, ripples, waterfall, ridges, skyline, beat burst and Lissajous.

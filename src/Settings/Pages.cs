@@ -624,7 +624,7 @@ namespace IdleVeil
                 }
                 ui.MaskCorners(g, inner, ui.SF(4), Color.FromArgb(12, 12, 12));
                 ui.MaskCorners(g, r, ui.SF(6), Color.FromArgb(28, 28, 28));
-                bool off = opt.OffMonitor != "" && string.Equals(opt.OffMonitor, s.Id, StringComparison.OrdinalIgnoreCase);
+                bool off = opt.OffSelected(s.Id);
                 int grpIndex = Groups && opt.Groups.Count > 0 ? ScreenGroups.GroupOf(opt, s) : -1;
                 Color edge = grpIndex >= 0 ? GroupColors[grpIndex % GroupColors.Length] : Color.FromArgb(70, 70, 70);
                 ui.Border(g, r, ui.SF(6), hot ? ui.Accent : off ? Ui.Mix(ui.Accent, Color.Black, 0.35f) : edge, hot || grpIndex >= 0 ? ui.SF(2) : 1f);
@@ -911,30 +911,67 @@ namespace IdleVeil
                   SecondsChoice(StartMinutes, Opt.IdleSeconds, delegate(int s) { Opt.IdleSeconds = s; Changed(); }));
 
             l.Header("OLED care");
-            var values = new List<string> { "" };
-            var labels = new List<string> { "None" };
+            var monitors = new List<MonitorInfo>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (MonitorInfo m in DisplayDetach.List())
+                if (m.Id != "" && seen.Add(m.Id)) monitors.Add(m);
+            // Screens picked in the ini that aren't connected right now still get a row, so they can be unpicked.
+            foreach (string id in Opt.OffMonitors)
+                if (seen.Add(id)) monitors.Add(new MonitorInfo { Id = id, Name = null });
+
+            if (monitors.Count == 0)
+                l.Row(Glyphs.Monitor, "Turn off screens", "No monitor was reported by Windows.", null);
+            foreach (MonitorInfo m in monitors)
             {
-                if (m.Id == "" || !seen.Add(m.Id)) continue;
-                values.Add(m.Id);
-                labels.Add(m.Name + " (" + m.Id + ")");
+                string id = m.Id;
+                bool on = Opt.OffSelected(id);
+                l.Row(Glyphs.Monitor, m.Name != null ? m.Name + " (" + id + ")" : id + " (not connected)",
+                      on ? "Turns off once the veil has shown for a while." : "Not turned off; tick to include it.",
+                      new Toggle(on, delegate(bool v) { Opt.SetOffSelected(id, v); Changed(); Window.QueueRebuild(); }));
             }
-            string off = Opt.OffMonitor ?? "";
-            if (off != "" && !seen.Contains(off))
-            {
-                values.Add(off);
-                labels.Add((DisplayDetach.IsDetached ? DisplayDetach.DetachedName + ", off now" : off + ", not connected"));
-            }
-            string selected = off;
-            foreach (string v in values) if (string.Equals(v, off, StringComparison.OrdinalIgnoreCase)) selected = v;
-            l.Row(Glyphs.Power, "Turn off a monitor",
-                  "Detaches it from the desktop once the veil has shown for a while. It sees no signal and goes into its own standby, where OLEDs run their pixel refresh. Input brings it back, with your windows where they were.",
-                  new DropDown(values.ToArray(), labels.ToArray(), selected, delegate(string v) { Opt.OffMonitor = v; Changed(); }) { MinWidth = 220 });
+
+            bool standby = Opt.OffMode == "standby";
+            l.Row(Glyphs.Power, "How they turn off",
+                  standby
+                      ? "Sends the monitor its own standby command over DDC/CI, the same one its power button uses. The desktop layout never changes, so no windows move. Not every monitor, KVM or adapter answers it; if it doesn't, the screen is left alone (and every-screen picks fall back to Windows' standby broadcast)."
+                      : "Removes the screens from the desktop layout, so they see no signal and run their own standby. The most thorough way (nothing can wake them), but Windows re-arranges the desktop while they're gone and windows are put back afterwards.",
+                  new DropDown(new[] { "detach", "standby" }, new[] { "Detach from desktop", "Normal standby" }, Opt.OffMode,
+                               delegate(string v) { Opt.OffMode = v; Changed(); Window.QueueRebuild(); }));
+
             var after = SecondsChoice(OffMinutes, Opt.OffAfterSeconds, delegate(int s) { Opt.OffAfterSeconds = s; Changed(); });
-            after.Enabled = off != "";
-            SettingRow afterRow = l.Row(Glyphs.Clock, "Turn it off after", "Time the veil has been showing. It waits while an app (e.g. an AI agent) is still clicking around.", after);
-            afterRow.Enabled = off != "";
+            bool anyOff = Opt.OffMonitors.Count > 0;
+            after.Enabled = anyOff;
+            SettingRow afterRow = l.Row(Glyphs.Clock, "Turn them off after", "Time the veil has been showing. It waits while an app (e.g. an AI agent) is still clicking around.", after);
+            afterRow.Enabled = anyOff;
+
+            var wait = new Toggle(Opt.OffWaitForApps, delegate(bool v) { Opt.OffWaitForApps = v; Changed(); });
+            wait.Enabled = standby;
+            SettingRow waitRow = l.Row(Glyphs.Info, "Wait for apps",
+                  "A normal standby can't override an app that asked Windows to keep the display on. While one does (powercfg /requests), the turn-off waits instead of fighting it.",
+                  wait);
+            waitRow.Enabled = standby;
+
+            if (standby)
+            {
+                MonitorPower.PowerRequests req = MonitorPower.Requests();
+                string state = req.Display.Count > 0
+                    ? "Keeping the display on now: " + string.Join(", ", req.Display.ToArray()) + "."
+                    : req.Known ? "Nothing is keeping the display on right now."
+                                : "Can't tell right now: " + req.Note + ".";
+                l.Row(Glyphs.Info, "Display requests", state + " Same query as powercfg /requests.",
+                      new PushButton(Glyphs.Update, "Check", false, delegate { MonitorPower.Refresh(); Window.QueueRebuild(); }));
+
+                l.Row(Glyphs.Robot, "Name them with gsudo",
+                      "powercfg /requests needs admin rights to say which app it is. Tick to ask gsudo instead, so IdleVeil can keep running unelevated (gsudo must be on PATH; it may show a UAC prompt).",
+                      new Toggle(Opt.OffGsudo, delegate(bool v)
+                      {
+                          Opt.OffGsudo = v;
+                          MonitorPower.UseGsudo = v;
+                          MonitorPower.ClearCache();
+                          Changed();
+                          Window.QueueRebuild();
+                      }));
+            }
 
             l.Header("Activity");
             l.Row(Glyphs.Video, "Keep screen on",

@@ -71,7 +71,7 @@ Each line has these parts:
   | `gpu` | Device, device lost, overlay rebuilt |
   | `audio` | Audio |
   | `music` | Visualizer picks and switches |
-  | `display` | Monitor detach and reattach, layout changes |
+  | `display` | Turning screens off and back on (standby and detach), layout changes |
   | `settings` | Window opened and closed, `changed: key old→new` |
   | `tray` | Tray menu clicks |
   | `update` | Updates |
@@ -152,7 +152,7 @@ A crash report is written from these hooks:
 | Hook | What happens next |
 | --- | --- |
 | `Application.ThreadException` (UI thread) | The app keeps running. There is no WinForms error dialog, so nothing sits over the veil. |
-| `AppDomain.UnhandledException` | The process ends. The cursor is restored and a detached monitor is put back first. |
+| `AppDomain.UnhandledException` | The process ends. The cursor is restored and screens turned off by the veil are brought back first. |
 | An exception in the GPU render loop | The overlay is rebuilt, just as after a lost device. |
 
 After every crash, the system cursor is restored. At most 5 reports are written per run, so a

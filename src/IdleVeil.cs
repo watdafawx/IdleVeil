@@ -250,13 +250,17 @@ namespace IdleVeil
         public string KeepOnFor = "fullscreen";   // honour "keep the display on" requests: fullscreen | always | never
         public bool HideCursor = true;
         public bool IgnoreInjected = true;        // only real mouse/keyboard input counts as activity
-        public string OffMonitor = "";            // EDID id of the monitor to turn off (detach), e.g. AUS2740
+        public string OffMode = "standby";        // how screens are turned off: standby (DDC/CI) | detach
+        public List<string> OffMonitors = new List<string>();   // EDID ids of the screens to turn off, e.g. AUS2740
+        public bool OffWaitForApps = true;        // standby: wait while an app has asked Windows to keep the display on
+        public bool OffGsudo;                     // name display requests with gsudo instead of running as admin
         public List<string> NoVeilApps = new List<string>();   // never veil while one of these exes is focused
         public bool AutoUpdate = true;            // install new releases from GitHub automatically
         public bool AfterUpdate;                  // started by the updater; wait for the old copy to quit
         public bool Debug;                        // log idle state every 10 s
         public int OffAfterSeconds = 300;         // how long after the veil appears
         public bool AudioTest;                    // --audio-test: list audio devices, then levels of the chosen one for 5 s
+        public bool PowerTest;                    // --power-test: screens, DDC power support and power requests
         public List<string> RandomPool;           // scenes Random may pick; null = the default set (SceneCatalog)
         public bool OpenSettings;                 // --settings: open the settings window (in the running copy if there is one)
         public bool Exit;
@@ -297,7 +301,11 @@ namespace IdleVeil
                     else if (k == "hidecursor") HideCursor = v == "1" || v.ToLowerInvariant() == "true";
                     else if (k == "ignoreinjected") IgnoreInjected = v == "1" || v.ToLowerInvariant() == "true";
                     else if (k == "keeponfor") KeepOnFor = v.ToLowerInvariant();
-                    else if (k == "offmonitor") OffMonitor = v;
+                    else if (k == "offmonitor") { if (OffMonitors.Count == 0 && v != "") OffMonitors.Add(v); }
+                    else if (k == "offmonitors") SetOffMonitors(v);
+                    else if (k == "offmode") OffMode = v.ToLowerInvariant() == "detach" ? "detach" : "standby";
+                    else if (k == "offwaitapps") OffWaitForApps = v == "1" || v.ToLowerInvariant() == "true";
+                    else if (k == "offgsudo") OffGsudo = v == "1" || v.ToLowerInvariant() == "true";
                     else if (k == "offafter") OffAfterSeconds = int.Parse(v);
                     else if (k == "debug") Debug = v == "1";
                     else if (k == "logdays") { int d; if (int.TryParse(v, out d) && d > 0) AppLog.Days = d; }
@@ -312,10 +320,38 @@ namespace IdleVeil
             }
             catch (Exception ex) { Program.Log("settings load error: " + ex.Message); }
             ApplyLogLevel();
+            MonitorPower.UseGsudo = OffGsudo;
         }
 
         public void ApplyLogLevel() { AppLog.Min = Debug || DebugFlag ? LogLevel.Debug : LogLevel.Info; }
         static bool DebugFlag;   // --debug: debug logging for this run, whatever the ini says
+
+        // Screens to turn off once the veil has shown for a while: any number of EDID ids.
+        public bool OffSelected(string id)
+        {
+            if (id == null) return false;
+            foreach (string s in OffMonitors) if (string.Equals(s, id, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        public void SetOffMonitors(string list)
+        {
+            OffMonitors.Clear();
+            if (list == null) return;
+            foreach (string s in list.Split(','))
+            {
+                string id = s.Trim();
+                if (id != "" && !OffSelected(id)) OffMonitors.Add(id);
+            }
+        }
+
+        public void SetOffSelected(string id, bool on)
+        {
+            if (on) { if (!OffSelected(id)) OffMonitors.Add(id); }
+            else
+                for (int i = OffMonitors.Count - 1; i >= 0; i--)
+                    if (string.Equals(OffMonitors[i], id, StringComparison.OrdinalIgnoreCase)) OffMonitors.RemoveAt(i);
+        }
 
         // The ini lines, in file order.
         public List<string> Lines()
@@ -323,7 +359,9 @@ namespace IdleVeil
             var lines = new List<string> {
                 "mode=" + Mode, "idle=" + IdleSeconds, "hidecursor=" + (HideCursor ? "1" : "0"),
                 "ignoreinjected=" + (IgnoreInjected ? "1" : "0"), "keeponfor=" + KeepOnFor,
-                "offmonitor=" + OffMonitor, "offafter=" + OffAfterSeconds, "noveilapps=" + string.Join(",", NoVeilApps.ToArray()), "autoupdate=" + (AutoUpdate ? "1" : "0"),
+                "offmode=" + OffMode, "offmonitors=" + string.Join(",", OffMonitors.ToArray()),
+                "offwaitapps=" + (OffWaitForApps ? "1" : "0"), "offgsudo=" + (OffGsudo ? "1" : "0"),
+                "offafter=" + OffAfterSeconds, "noveilapps=" + string.Join(",", NoVeilApps.ToArray()), "autoupdate=" + (AutoUpdate ? "1" : "0"),
                 "debug=" + (Debug ? "1" : "0"), "logdays=" + AppLog.Days, "screens=" + Screens, "renderer=" + (ForceGdi ? "gdi" : "gpu"),
                 "musicviz=" + MusicConfig.Viz, "musicclock=" + MusicConfig.Clock, "clockscreen=" + SpanConfig.ClockScreen, "audiodevice=" + AudioConfig.Device,
                 "audiosensitivity=" + AudioConfig.Sensitivity };
@@ -389,7 +427,8 @@ namespace IdleVeil
                 else if (k == "--preview") o.Preview = true;
                 else if (k == "--ignore-display-requests") o.KeepOnFor = "never";
                 else if (k == "--count-injected-input") o.IgnoreInjected = false;
-                else if (k == "--off-monitor") { o.OffMonitor = v; i++; }
+                else if (k == "--off-monitor") { o.SetOffMonitors(v); i++; }
+                else if (k == "--off-mode") { o.OffMode = v != null && v.ToLowerInvariant() == "detach" ? "detach" : "standby"; i++; }
                 else if (k == "--off-after") { o.OffAfterSeconds = int.Parse(v); i++; }
                 else if (k == "--stats") AppLog.PerfSeconds = 5;
                 else if (k == "--perf-every") { AppLog.PerfSeconds = Math.Max(1, int.Parse(v)); i++; }
@@ -397,6 +436,7 @@ namespace IdleVeil
                 else if (k == "--debug") { DebugFlag = true; o.ApplyLogLevel(); }
                 else if (k == "--crash-test") { o.CrashTest = v.ToLowerInvariant(); GpuVeil.CrashTest = o.CrashTest == "render"; i++; }
                 else if (k == "--audio-test") o.AudioTest = true;
+                else if (k == "--power-test") o.PowerTest = true;
                 else if (k == "--audio-device") { AudioConfig.Override = AudioConfig.Normalize(v); i++; }
                 else if (k == "--fake-audio") AudioInput.Synthetic = true;
                 else if (k == "--exit") o.Exit = true;
@@ -423,9 +463,11 @@ namespace IdleVeil
             AppLog.Legacy(msg);   // see Logging.cs; new code calls AppLog.Info/Warn with a category
         }
 
-        // Puts a detached monitor back and its windows where they were (used on exit).
+        // Puts screens turned off by a veil back: detached monitors return where they were, and
+        // screens left in DDC standby get their normal power-on (used on exit).
         public static void ReattachNow()
         {
+            MonitorPower.Wake();
             if (!DisplayDetach.IsDetached) return;
             DisplayDetach.Reattach();
             Thread.Sleep(1500);
@@ -454,6 +496,12 @@ namespace IdleVeil
             {
                 opt.LoadSettings();
                 AudioFeed.AudioTest(5);
+                return;
+            }
+            if (opt.PowerTest)
+            {
+                opt.LoadSettings();
+                MonitorPower.Test();
                 return;
             }
             if (opt.RenderTestDir != null)
@@ -488,7 +536,7 @@ namespace IdleVeil
             if (!created) return;
             SetDpiAware();
             HookCrashes();
-            if (!opt.Preview) { opt.LoadSettings(); DisplayDetach.RecoverAfterCrash(); Updater.Cleanup(); }
+            if (!opt.Preview) { opt.LoadSettings(); DisplayDetach.RecoverAfterCrash(); MonitorPower.RecoverAfterCrash(); Updater.Cleanup(); }
             AppLog.Info("app", "started v" + AppInfo.Version + (opt.Preview ? " (preview)" : "") + ": idle=" + opt.IdleSeconds + "s mode=" + opt.Mode + " screens=" + opt.Screens
                 + (opt.ForceGdi ? " gdi" : "") + " watch=" + (opt.WatchFile ?? "-") + " displayRequiredNow=" + Native.DisplayRequired()
                 + " log=" + AppLog.Min.ToString().ToLowerInvariant() + " perf every " + AppLog.PerfSeconds + " s");
@@ -540,6 +588,7 @@ namespace IdleVeil
         PhysicalInput input;
         int detachRetryAt;
         bool loggedAgentWait;
+        string loggedHoldOn;      // the app that was keeping the display on, so it's logged once
         int lastDebugLog;
         const int AgentQuietMs = 60000;   // don't pull a monitor away while something is still clicking on it
 
@@ -802,6 +851,7 @@ namespace IdleVeil
             UpdateTooltip();
             RaiseState();
             opt.ApplyLogLevel();
+            MonitorPower.UseGsudo = opt.OffGsudo;
             Dictionary<string, string> now = opt.Snapshot();
             string diff = Options.Diff(settingsBefore, now);
             settingsBefore = now;
@@ -816,7 +866,9 @@ namespace IdleVeil
             IVeil f = form;
             return "veil=" + (f == null ? "hidden" : "showing " + shownMode + " (" + (f is GpuVeil ? "gpu" : "gdi") + ")" + (previewing ? " preview" : ""))
                    + " setting mode=" + opt.Mode + " screens=" + opt.Screens + (paused ? " paused" : "") + " layout=" + SystemInformation.VirtualScreen
-                   + " monitors=" + Screen.AllScreens.Length + (DisplayDetach.IsDetached ? " (one detached)" : "");
+                   + " monitors=" + Screen.AllScreens.Length
+                   + (DisplayDetach.IsDetached ? " (" + DisplayDetach.DetachedName + " detached)" : "")
+                   + (MonitorPower.IsOff ? " (" + MonitorPower.OffName + " in standby)" : "");
         }
 
         public void Pause(DateTime until)
@@ -896,9 +948,11 @@ namespace IdleVeil
             return opt.KeepOnFor == "always" && Native.DisplayRequired();
         }
 
-        void MaybeDetach(int now)
+        void MaybeTurnOff(int now)
         {
-            if (opt.Preview || previewing || opt.OffMonitor == "" || DisplayDetach.IsDetached) return;
+            if (opt.Preview || previewing || opt.OffMonitors.Count == 0) return;
+            bool standby = opt.OffMode == "standby";
+            if (standby ? MonitorPower.IsOff : DisplayDetach.IsDetached) return;
             if (now - shownAt < opt.OffAfterSeconds * 1000 || now - detachRetryAt < 0) return;
             if (input != null && input.Ok && (uint)now - input.LastInjectedTick < AgentQuietMs)
             {
@@ -906,7 +960,31 @@ namespace IdleVeil
                 return;
             }
             loggedAgentWait = false;
-            if (!DisplayDetach.Detach(opt.OffMonitor)) detachRetryAt = now + 60000;
+
+            // A normal standby can't beat an app that has asked Windows to keep the display on: it
+            // would just come straight back. Say who it is (when we're allowed to ask) and wait.
+            if (standby && opt.OffWaitForApps)
+            {
+                MonitorPower.PowerRequests reqs = MonitorPower.Requests();
+                bool held = Native.DisplayRequired() || (reqs.Known && reqs.Display.Count > 0);
+                if (held)
+                {
+                    string who = reqs.Display.Count > 0
+                        ? string.Join(", ", reqs.Display.ToArray())
+                        : (reqs.Known ? "an app" : "an app (powercfg /requests needs admin to name it)");
+                    if (loggedHoldOn != who)
+                    {
+                        Program.Log("turn-off waiting: " + who + " is keeping the display on");
+                        loggedHoldOn = who;
+                    }
+                    detachRetryAt = now + 60000;
+                    return;
+                }
+            }
+            loggedHoldOn = null;
+
+            bool ok = standby ? MonitorPower.Standby(opt.OffMonitors) : DisplayDetach.Detach(opt.OffMonitors);
+            if (!ok) detachRetryAt = now + 60000;
         }
 
         void OnTick(object sender, EventArgs e)
@@ -950,7 +1028,7 @@ namespace IdleVeil
                         RaiseState();
                         return;
                     }
-                    MaybeDetach(now);
+                    MaybeTurnOff(now);
                     return;
                 }
 
@@ -1076,6 +1154,8 @@ namespace IdleVeil
             form = null;
             previewing = false;
             detachRetryAt = 0;
+            loggedHoldOn = null;
+            MonitorPower.Wake();
             if (DisplayDetach.IsDetached)
             {
                 DisplayDetach.Reattach();

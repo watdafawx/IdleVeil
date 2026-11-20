@@ -118,22 +118,32 @@ namespace IdleVeil
             return map;
         }
 
-        public static bool Detach(string monitorId)
+        public static bool Detach(IList<string> monitorIds)
         {
-            if (IsDetached || string.IsNullOrEmpty(monitorId)) return false;
+            if (IsDetached || monitorIds == null || monitorIds.Count == 0) return false;
+            var wanted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string id in monitorIds) if (!string.IsNullOrEmpty(id)) wanted.Add(id);
+            if (wanted.Count == 0) return false;
+            string picked = string.Join(",", new List<string>(monitorIds).ToArray());
             PathInfo[] paths; ModeInfo[] modes;
             if (!Query(out paths, out modes)) { Program.Log("detach: QueryDisplayConfig failed"); return false; }
 
             var keep = new List<PathInfo>();
-            string name = null;
+            var names = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var p in paths)
             {
                 var info = Describe(p.Target);
-                if (string.Equals(info.Id, monitorId, StringComparison.OrdinalIgnoreCase)) name = info.Name;
+                if (wanted.Contains(info.Id))
+                {
+                    seen.Add(info.Id);
+                    if (!names.Contains(info.Name)) names.Add(info.Name);
+                }
                 else keep.Add(p);
             }
-            if (name == null) { Program.Log("detach: monitor " + monitorId + " is not active"); return false; }
-            if (keep.Count == 0) { Program.Log("detach: refusing to turn off the only active monitor"); return false; }
+            if (names.Count == 0) { Program.Log("detach: none of " + picked + " is active"); return false; }
+            foreach (string id in wanted) if (!seen.Contains(id)) Program.Log("detach: " + id + " is not active");
+            if (keep.Count == 0) { Program.Log("detach: refusing to turn off every active monitor"); return false; }
 
             // Windows needs a monitor at (0,0) to become primary: shift the remaining ones so the top-left one is there.
             var newModes = (ModeInfo[])modes.Clone();
@@ -154,8 +164,8 @@ namespace IdleVeil
 
             savedWindows = WindowSpot.Capture();
             savedForeground = WindowSpot.Foreground();
-            savedPaths = paths; savedModes = modes; detachedName = name;
-            try { File.WriteAllText(MarkerPath, monitorId); } catch { }
+            savedPaths = paths; savedModes = modes; detachedName = string.Join(", ", names.ToArray());
+            try { File.WriteAllText(MarkerPath, picked); } catch { }
 
             r = SetDisplayConfig((uint)arr.Length, arr, (uint)newModes.Length, newModes, SDC_APPLY | SDC_USE_SUPPLIED | SDC_ALLOW_CHANGES);
             if (r != 0)
@@ -164,7 +174,7 @@ namespace IdleVeil
                 Forget();
                 return false;
             }
-            Program.Log("detached " + name + " (" + monitorId + "), saved " + savedWindows.Count + " windows");
+            Program.Log("detached " + detachedName + " (" + picked + "), saved " + savedWindows.Count + " windows");
             return true;
         }
 
